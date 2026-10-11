@@ -303,6 +303,8 @@ export const fictionalCharacters = characterBlueprints.map((character, index) =>
     isFictional: true,
     identityLabel: 'Fictional community character',
     currentActivity,
+    activityFrequency: 0.8 + (index % 5) * 0.15,
+    reactionPreferences: REACTION_TYPES.slice(index % REACTION_TYPES.length, (index % REACTION_TYPES.length) + 3),
   };
 });
 
@@ -923,12 +925,15 @@ export const createInitialSocialState = () => ({
   shares: clone(fictionalShares),
   tokens: clone(fictionalTokens),
   activity: clone(fictionalActivity),
+  announcements: [],
+  announcementHistory: [],
   nextIds: {
     post: fictionalPosts.length + 1,
     comment: fictionalComments.length + 1,
     reaction: fictionalReactions.length + 1,
     share: fictionalShares.length + 1,
     activity: fictionalActivity.length + 1,
+    announcement: 1,
   },
   localClock: 0,
 });

@@ -29,18 +29,54 @@ const isFictionalAuthor = (state, authorId) =>
 const validText = (value, maximumLength) =>
   typeof value === 'string' && value.trim().length > 0 && value.trim().length <= maximumLength;
 
-const nextId = (state, kind, prefix) => `${prefix}-${String(state.nextIds[kind]).padStart(3, '0')}`;
+const nextId = (state, kind, prefix) => `${prefix}-${String(state.nextIds?.[kind] || 1).padStart(3, '0')}`;
 
 const nextIds = (state, kind) => ({
   ...state.nextIds,
-  [kind]: state.nextIds[kind] + 1,
+  [kind]: (state.nextIds?.[kind] || 1) + 1,
 });
 
-const appendActivity = (state, activity) => ({
-  ...state,
-  activity: [activity, ...state.activity],
-  nextIds: nextIds(state, 'activity'),
-});
+const getActor = (state, actorId) =>
+  [...(state.characters || []), state.currentUser].find((character) => character?.id === actorId);
+
+const announcementFor = (state, activity) => {
+  const actor = getActor(state, activity.actorId);
+  const post = activity.postId ? getPostById(state, activity.postId) : null;
+  if (!actor) return null;
+  if (activity.type === 'post-created' && post) {
+    return { type: 'new-post', key: activity.id, text: `${actor.handle || `@${actor.username}`} just published a new post!`, postId: post.id };
+  }
+  if (activity.type === 'comment-created' && post) {
+    return { type: 'new-conversation', key: activity.id, text: `${actor.handle || `@${actor.username}`} started a new conversation.` , postId: post.id };
+  }
+  if (activity.type === 'post-shared' && post) {
+    return { type: 'shared-post', key: activity.id, text: `${actor.handle || `@${actor.username}`} shared a post.`, postId: post.id };
+  }
+  if (activity.type === 'reaction-added' && post && reactionTotal(post) >= 25) {
+    return { type: 'popular-post', key: `popular-${post.id}`, text: `This post just reached ${reactionTotal(post)} reactions!`, postId: post.id };
+  }
+  return null;
+};
+
+const appendActivity = (state, activity) => {
+  const candidate = announcementFor(state, activity);
+  const alreadyShown = candidate && state.announcementHistory?.some((item) => item.key === candidate.key);
+  const announcement = candidate && !alreadyShown
+    ? { ...candidate, id: nextId(state, 'announcement', 'announcement'), createdAt: activity.createdAt }
+    : null;
+  const activityState = {
+    ...state,
+    activity: [activity, ...(state.activity || [])].slice(0, 200),
+    nextIds: nextIds(state, 'activity'),
+  };
+  if (!announcement) return activityState;
+  return {
+    ...activityState,
+    announcements: [announcement, ...(state.announcements || [])].slice(0, 4),
+    announcementHistory: [announcement, ...(state.announcementHistory || [])].slice(0, 100),
+    nextIds: nextIds(activityState, 'announcement'),
+  };
+};
 
 const makeActivity = (state, details) => ({
   id: nextId(state, 'activity', 'local-activity'),
@@ -140,6 +176,79 @@ export const recordProfileVisit = (state, characterId) => {
       isFictional: false,
     }),
   );
+};
+
+const recordCharacterActivity = (state, details) => {
+  if (!state.characters.some((character) => character.id === details.actorId)) return state;
+  return appendActivity(state, makeActivity(state, { ...details, isFictional: true }));
+};
+
+const randomItem = (items, random) => items[Math.floor(random() * items.length)];
+
+const chooseCharacter = (characters, random) => {
+  const total = characters.reduce((sum, character) => sum + (character.activityFrequency || 1), 0);
+  let cursor = random() * total;
+  return characters.find((character) => {
+    cursor -= character.activityFrequency || 1;
+    return cursor <= 0;
+  }) || characters[0];
+};
+
+const autonomousPost = (character) => {
+  const topic = character.interests?.[0] || 'the plaza';
+  const personality = character.personality || 'A thought crossed my mind';
+  return `${personality} · ${topic} is worth another look today.`;
+};
+
+const autonomousComment = (character, post) => {
+  const topic = post.topic || post.subject || 'this idea';
+  return `${character.personality || 'I like this'} — the ${topic} detail is exactly what caught my eye.`;
+};
+
+export const runAutonomousActivity = (state, random = Math.random, requestedAction = null) => {
+  const characters = state.characters || [];
+  if (!characters.length) return state;
+  const actor = chooseCharacter(characters, random);
+  const action = requestedAction || randomItem(['react', 'react', 'comment', 'reply', 'share', 'post', 'visit'], random);
+
+  if (action === 'post') {
+    return createPost(state, {
+      authorId: actor.id,
+      content: autonomousPost(actor),
+      topic: actor.interests?.[0] || 'community',
+      subject: actor.personality || 'a plaza thought',
+    });
+  }
+
+  if (action === 'react') {
+    const candidates = state.posts.filter((post) => !state.reactions.some((reaction) => reaction.targetType === 'post' && reaction.targetId === post.id && reaction.actorId === actor.id));
+    const post = randomItem(candidates, random);
+    if (!post) return state;
+    return toggleReaction(state, {
+      targetType: 'post',
+      targetId: post.id,
+      actorId: actor.id,
+      reactionType: randomItem(actor.reactionPreferences || REACTION_TYPES, random),
+    });
+  }
+
+  if (action === 'comment') {
+    const post = randomItem(state.posts.filter((item) => item.authorId !== actor.id), random);
+    return post ? addComment(state, { postId: post.id, actorId: actor.id, content: autonomousComment(actor, post) }) : state;
+  }
+
+  if (action === 'reply') {
+    const comment = randomItem(state.comments, random);
+    return comment ? addComment(state, { postId: comment.postId, parentCommentId: comment.id, actorId: actor.id, content: autonomousComment(actor, getPostById(state, comment.postId) || {}) }) : state;
+  }
+
+  if (action === 'share') {
+    const post = randomItem(state.posts, random);
+    return post ? sharePost(state, { postId: post.id, actorId: actor.id }) : state;
+  }
+
+  const target = randomItem(characters, random);
+  return target ? recordCharacterActivity(state, { type: action === 'visit' ? 'profile-visited' : 'area-visited', actorId: actor.id, characterId: target.id }) : state;
 };
 
 export const editPost = (state, input = {}) => {

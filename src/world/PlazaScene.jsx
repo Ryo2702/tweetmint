@@ -136,45 +136,19 @@ export default function PlazaScene({ characters, onZoneSelect, onCharacterSelect
 
       const people = characters.slice(0, 25).map(makeCharacter);
       people.forEach(({ person }) => world.addChild(person));
-      let pointerId = null;
-      let dragging = false;
-      let origin = { x: 0, y: 0 };
-      let stageOrigin = { x: 0, y: 0 };
-      const pointerDown = (event) => {
-        if (event.button !== undefined && event.button !== 0) return;
-        pointerId = event.pointerId;
-        dragging = false;
-        origin = { x: event.clientX, y: event.clientY };
-        stageOrigin = { x: world.x, y: world.y };
-        element.setPointerCapture?.(pointerId);
-      };
-      const pointerMove = (event) => {
-        if (pointerId !== event.pointerId) return;
-        const deltaX = event.clientX - origin.x;
-        const deltaY = event.clientY - origin.y;
-        if (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3) dragging = true;
-        if (dragging) world.position.set(stageOrigin.x + deltaX, stageOrigin.y + deltaY);
-      };
       const pointerUp = (event) => {
-        if (pointerId !== event.pointerId) return;
-        if (!dragging) {
-          const bounds = element.getBoundingClientRect();
-          const x = (event.clientX - bounds.left - world.x) / world.scale.x;
-          const y = (event.clientY - bounds.top - world.y) / world.scale.y;
-          const zone = zones.find((item) => x >= item.x && x <= item.x + item.w && y >= item.y && y <= item.y + item.h);
-          if (zone) callbacks.current.onZoneSelect(zone.id);
-          else {
-            const match = people.find(({ person }) => Math.abs(person.x - x) < 18 && Math.abs(person.y - y) < 28);
-            if (match) callbacks.current.onCharacterSelect(match.character);
-          }
+        if (event.button !== undefined && event.button !== 0) return;
+        const bounds = element.getBoundingClientRect();
+        const x = (event.clientX - bounds.left - world.x) / world.scale.x;
+        const y = (event.clientY - bounds.top - world.y) / world.scale.y;
+        const zone = zones.find((item) => x >= item.x && x <= item.x + item.w && y >= item.y && y <= item.y + item.h);
+        if (zone) callbacks.current.onZoneSelect(zone.id);
+        else {
+          const match = people.find(({ person }) => Math.abs(person.x - x) < 18 && Math.abs(person.y - y) < 28);
+          if (match) callbacks.current.onCharacterSelect(match.character);
         }
-        pointerId = null;
-        element.releasePointerCapture?.(event.pointerId);
       };
-      element.addEventListener('pointerdown', pointerDown);
-      element.addEventListener('pointermove', pointerMove);
       element.addEventListener('pointerup', pointerUp);
-      element.addEventListener('pointercancel', pointerUp);
 
       app.ticker.add(() => {
         const now = performance.now() / 1000;
@@ -197,10 +171,7 @@ export default function PlazaScene({ characters, onZoneSelect, onCharacterSelect
         gsap.to(world.scale, { x: next, y: next, duration: 0.16 });
       };
       element._tweetmintCleanup = () => {
-        element.removeEventListener('pointerdown', pointerDown);
-        element.removeEventListener('pointermove', pointerMove);
         element.removeEventListener('pointerup', pointerUp);
-        element.removeEventListener('pointercancel', pointerUp);
       };
     };
     setup();
@@ -219,7 +190,7 @@ export default function PlazaScene({ characters, onZoneSelect, onCharacterSelect
         <button type="button" onClick={() => host.current?._tweetmintZoom?.(-0.12)} aria-label="Zoom out">−</button>
         <button type="button" onClick={() => host.current?._tweetmintReset?.()} aria-label="Reset world view">◎</button>
       </div>
-      <p className="scene-hint">DRAG TO PAN · USE CONTROLS TO ZOOM · CLICK A PLACE OR PERSON</p>
+      <p className="scene-hint">USE CONTROLS TO ZOOM · CLICK A PLACE OR PERSON</p>
     </div>
   );
 }
