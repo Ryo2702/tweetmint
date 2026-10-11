@@ -69,7 +69,6 @@ export function PostCard({
             <strong className="post-name">{author.displayName || author.name || author.username || 'Anonymous'}</strong>
             {author.username && <span className="post-handle">@{String(author.username).replace(/^@/, '')}</span>}
             {time && <time className="post-time">{time}</time>}
-            {author.isFictional && <span className="source-chip">FICTIONAL</span>}
           </div>
         </div>
       </div>

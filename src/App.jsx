@@ -1,5 +1,4 @@
 import { AnimatePresence, motion } from 'motion/react';
-import { useQuery } from '@tanstack/react-query';
 import {
   Bell,
   Coins,
@@ -9,7 +8,6 @@ import {
   Gamepad2,
   MessageCircle,
   Plus,
-  Radar,
   RefreshCw,
   Search,
   Send,
@@ -26,7 +24,6 @@ import PostCard from './components/PostCard.jsx';
 import PlazaScene from './world/PlazaScene.jsx';
 import { usePlazaUi } from './state/uiStore.js';
 import {
-  FICTIONAL_COMMUNITY_NOTICE,
   REACTION_TYPES,
   TRENDING_FILTERS,
   addComment,
@@ -36,6 +33,7 @@ import {
   getPostById,
   getTrendingPosts,
   reactionTotal,
+  recordProfileVisit,
   sharePost,
   toggleReaction
 } from './state/socialStore.js';
@@ -55,7 +53,10 @@ const plazaPositions = [
 const initialState = () => {
   try {
     const stored = window.localStorage.getItem(STORAGE_KEY);
-    return stored ? JSON.parse(stored) : createInitialSocialState();
+    const state = stored ? JSON.parse(stored) : createInitialSocialState();
+    return state.currentUser?.displayName === 'Local Demo Visitor'
+      ? { ...state, currentUser: { ...state.currentUser, handle: '@mikapixel', displayName: 'Mika Pixel' } }
+      : state;
   } catch {
     return createInitialSocialState();
   }
@@ -107,12 +108,6 @@ export default function App() {
   const [toasts, setToasts] = useState([]);
   const { panel, selectedPostId, selectedCharacterId, openPanel, closePanel } = usePlazaUi();
 
-  const integration = useQuery({
-    queryKey: ['tweetmint-integration-status'],
-    queryFn: async () => ({ xLookup: false, solanaLaunch: false, rpc: false, storage: 'browser-local' }),
-    staleTime: Infinity
-  });
-
   useEffect(() => {
     try { window.localStorage.setItem(STORAGE_KEY, shallowState(social)); } catch { /* local persistence is best-effort only */ }
   }, [social]);
@@ -146,7 +141,10 @@ export default function App() {
   };
 
   const showPost = (post) => openPanel('detail', { selectedPostId: post.id });
-  const showCharacter = (character) => openPanel('profile', { selectedCharacterId: character.id });
+  const showCharacter = (character) => {
+    setSocial((state) => recordProfileVisit(state, character.id));
+    openPanel('profile', { selectedCharacterId: character.id });
+  };
 
   const openZone = (zone) => {
     const panelForZone = { terminal: 'composer', feed: 'feed', trending: 'trending', mint: 'mint', trading: 'tokens', lounge: 'community' };
@@ -225,7 +223,7 @@ export default function App() {
   const resetLocalWorld = () => {
     try { window.localStorage.removeItem(STORAGE_KEY); } catch { /* reset still works in memory */ }
     setSocial(createInitialSocialState());
-    notify('The local fictional plaza has been reset.');
+    notify('The plaza has been reset.');
   };
 
   const nav = [
@@ -246,7 +244,6 @@ export default function App() {
           {nav.map(([id, label]) => <button className={`nav-button ${panel === id ? 'is-active' : ''}`} type="button" key={id} onClick={() => openPanel(id === 'world' ? null : id)}>{label}</button>)}
         </nav>
         <span className="topbar-spacer" />
-        <span className="truth-chip">LOCAL FICTION</span>
         {wallet ? (
           <button className="top-action" type="button" onClick={() => openPanel('wallet')}><Wallet size={14} /> {wallet.address.slice(0, 4)}…{wallet.address.slice(-4)}</button>
         ) : (
@@ -259,10 +256,9 @@ export default function App() {
           <PlazaScene characters={sceneCharacters} onZoneSelect={openZone} onCharacterSelect={showCharacter} />
 
           <div className="world-banner" aria-hidden="true">
-            <p>THE SOCIAL PLAZA · BROWSER-LOCAL DEMO</p>
+            <p>THE SOCIAL PLAZA</p>
             <h1>EVERY POST IS A <span>COIN.</span></h1>
           </div>
-          <aside className="local-note"><Radar size={14} /><span><strong>REALITY CHECK</strong><br />{integration.isLoading ? 'Checking local integration status…' : FICTIONAL_COMMUNITY_NOTICE}</span></aside>
 
           <aside className="activity-board" aria-label="Recent community activity">
             <header><span>✦ PLAZA PULSE</span><span>LOCAL</span></header>
@@ -270,7 +266,9 @@ export default function App() {
               {social.activity.slice(0, 4).map((activity) => {
                 const actor = actorFor(activity.actorId);
                 const post = activity.postId ? getPostById(social, activity.postId) : null;
-                return <div className="activity-item" key={activity.id}><span className="activity-dot" /><button type="button" onClick={() => post && showPost(post)}><strong>{actor.displayName}</strong> {prettify(activity.type)}{post ? ` · “${post.content.slice(0, 28)}…”` : ''}</button></div>;
+                const visited = activity.characterId ? characterById.get(activity.characterId) : null;
+                const activityText = visited ? `visited ${visited.displayName}` : prettify(activity.type);
+                return <div className="activity-item" key={activity.id}><span className="activity-dot" /><button type="button" onClick={() => post && showPost(post)}><strong>{actor.displayName}</strong> {activityText}{post ? ` · “${post.content.slice(0, 28)}…”` : ''}</button></div>;
               })}
             </div>
           </aside>
@@ -307,7 +305,7 @@ export default function App() {
         {toasts.map((toast) => <div className={`toast ${toast.kind === 'error' ? 'error' : ''}`} key={toast.id}>{toast.kind === 'error' ? <XCircle /> : <Sparkles />}<span>{toast.message}</span></div>)}
       </div>
 
-      <button type="button" className="reset-local-world" onClick={resetLocalWorld} aria-label="Reset local demo world"><RefreshCw size={12} /> reset</button>
+      <button type="button" className="reset-local-world" onClick={resetLocalWorld} aria-label="Reset plaza"><RefreshCw size={12} /> reset</button>
     </main>
   );
 }
@@ -337,7 +335,7 @@ function CommentThread({ comment, replies, getAuthor, currentUser, social, onRep
 
 function ProfileWindow({ character, posts, onOpen, onClose }) {
   const authored = posts.filter((post) => post.authorId === character.id);
-  return <div className="floating-window profile-window"><PixelWindow eyebrow={character.isFictional ? 'FICTIONAL PLAZA CHARACTER' : 'LOCAL VISITOR'} title="Profile station" onClose={onClose}><div className="profile-hero"><Avatar character={character} size={52} /><div><h2 className="profile-name">{character.displayName}</h2><div className="profile-handle">{character.username}</div><p className="profile-bio">{character.isFictional ? `${character.personality}. Into ${(character.interests || []).join(', ')}.` : 'Posts are kept in this browser until a server is configured.'}</p></div></div><div className="profile-stats"><div className="profile-stat"><strong>{authored.length}</strong><span>posts</span></div><div className="profile-stat"><strong>{character.isFictional ? 'NPC' : 'LOCAL'}</strong><span>identity</span></div><div className="profile-stat"><strong>—</strong><span>followers</span></div></div><div className="window-body compact">{authored.slice(0, 4).map((post) => <button key={post.id} className="mini-action" type="button" onClick={() => onOpen(post)}>Open: {post.content.slice(0, 42)}…</button>)}</div></PixelWindow></div>;
+  return <div className="floating-window profile-window"><PixelWindow eyebrow="PLAZA MEMBER" title="Profile station" onClose={onClose}><div className="profile-hero"><Avatar character={character} size={52} /><div><h2 className="profile-name">{character.displayName}</h2><div className="profile-handle">{character.username}</div><p className="profile-bio">{character.isFictional ? `${character.personality}. Into ${(character.interests || []).join(', ')}.` : 'Posts are kept in this browser until a server is configured.'}</p></div></div><div className="profile-stats"><div className="profile-stat"><strong>{authored.length}</strong><span>posts</span></div><div className="profile-stat"><strong>{character.isFictional ? 'NPC' : 'LOCAL'}</strong><span>identity</span></div><div className="profile-stat"><strong>—</strong><span>followers</span></div></div><div className="window-body compact">{authored.slice(0, 4).map((post) => <button key={post.id} className="mini-action" type="button" onClick={() => onOpen(post)}>Open: {post.content.slice(0, 42)}…</button>)}</div></PixelWindow></div>;
 }
 
 function MintWindow({ value, onChange, status, onCheck, onClose }) {
@@ -346,10 +344,10 @@ function MintWindow({ value, onChange, status, onCheck, onClose }) {
 }
 
 function TokensWindow({ tokens, posts, onOpen, onClose }) {
-  return <div className="floating-window tokens-window"><PixelWindow eyebrow="COIN GARDEN" title="Fictional token concepts" onClose={onClose}><p className="panel-note"><Coins />These are explicitly fictional local concepts—not minted, tradeable, priced, or connected to a wallet.</p><div className="token-list">{tokens.map((token) => { const post = posts.find((item) => item.id === token.sourcePostId); return <button type="button" className="token-row" key={token.id} onClick={() => post && onOpen(post)}><span className="token-symbol">${token.ticker.slice(0, 3)}</span><span className="token-info"><strong>{token.name}</strong><span>Original fictional post · {post?.content.slice(0, 40)}</span></span><span className="token-state">NOT DEPLOYED<small>market data unavailable</small></span></button>; })}</div></PixelWindow></div>;
+  return <div className="floating-window tokens-window"><PixelWindow eyebrow="COIN GARDEN" title="Token concepts" onClose={onClose}><p className="panel-note"><Coins />These token concepts are not minted, tradeable, priced, or connected to a wallet.</p><div className="token-list">{tokens.map((token) => { const post = posts.find((item) => item.id === token.sourcePostId); return <button type="button" className="token-row" key={token.id} onClick={() => post && onOpen(post)}><span className="token-symbol">${token.ticker.slice(0, 3)}</span><span className="token-info"><strong>{token.name}</strong><span>Original post · {post?.content.slice(0, 40)}</span></span><span className="token-state">NOT DEPLOYED<small>market data unavailable</small></span></button>; })}</div></PixelWindow></div>;
 }
 
 function WalletWindow({ wallet, onConnect, onDisconnect, onClose }) {
   if (wallet) return <div className="floating-window profile-window"><PixelWindow eyebrow="WALLET" title={wallet.provider} onClose={onClose}><div className="window-body"><p className="panel-note"><Wallet />Connected through this browser. No private key, seed phrase, balance, or transaction is requested or displayed.</p><p className="muted">PUBLIC ADDRESS</p><p className="wallet-address">{wallet.address}</p><p className="muted">SOL BALANCE · UNAVAILABLE (NO RPC CONFIGURED)</p><div className="window-actions"><button className="pixel-button" type="button" onClick={() => navigator.clipboard?.writeText(wallet.address)}> <Copy /> Copy address</button><button className="pixel-button warning" type="button" onClick={onDisconnect}>Disconnect</button></div></div></PixelWindow></div>;
-  return <div className="floating-window profile-window"><PixelWindow eyebrow="WALLET SELECT" title="Connect your wallet" onClose={onClose}><div className="wallet-grid"><button className="wallet-choice" type="button" onClick={() => onConnect('Phantom')}><span className="wallet-icon">P</span>Phantom</button><button className="wallet-choice" type="button" onClick={() => onConnect('Solflare')}><span className="wallet-icon">S</span>Solflare</button></div><p className="wallet-footnote">Only Phantom and Solflare are offered. Connection is requested through the provider extension; this local demo does not initiate trades or sign transactions.</p></PixelWindow></div>;
+  return <div className="floating-window profile-window"><PixelWindow eyebrow="WALLET SELECT" title="Connect your wallet" onClose={onClose}><div className="wallet-grid"><button className="wallet-choice" type="button" onClick={() => onConnect('Phantom')}><span className="wallet-icon">P</span>Phantom</button><button className="wallet-choice" type="button" onClick={() => onConnect('Solflare')}><span className="wallet-icon">S</span>Solflare</button></div><p className="wallet-footnote">Only Phantom and Solflare are offered. Connection is requested through the provider extension; this browser does not initiate trades or sign transactions. <a className="wallet-link" href="https://solana.com" target="_blank" rel="noreferrer">Solana</a> · <a className="wallet-link" href="https://solflare.com" target="_blank" rel="noreferrer">Solflare</a></p></PixelWindow></div>;
 }

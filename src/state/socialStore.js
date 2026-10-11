@@ -129,6 +129,19 @@ export const createPost = (state, input = {}) => {
   );
 };
 
+export const recordProfileVisit = (state, characterId) => {
+  if (!state.characters.some((character) => character.id === characterId)) return state;
+  return appendActivity(
+    state,
+    makeActivity(state, {
+      type: 'profile-visited',
+      actorId: state.currentUser?.id,
+      characterId,
+      isFictional: false,
+    }),
+  );
+};
+
 export const editPost = (state, input = {}) => {
   const { postId, actorId = state.currentUser?.id } = input;
   const post = getPostById(state, postId);

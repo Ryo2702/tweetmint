@@ -176,13 +176,6 @@ export default function PlazaScene({ characters, onZoneSelect, onCharacterSelect
       element.addEventListener('pointerup', pointerUp);
       element.addEventListener('pointercancel', pointerUp);
 
-      const wheel = (event) => {
-        event.preventDefault();
-        const next = Math.max(0.52, Math.min(1.25, world.scale.x + (event.deltaY > 0 ? -0.075 : 0.075)));
-        world.scale.set(next);
-      };
-      element.addEventListener('wheel', wheel, { passive: false });
-
       app.ticker.add(() => {
         const now = performance.now() / 1000;
         people.forEach((entry, index) => {
@@ -203,10 +196,7 @@ export default function PlazaScene({ characters, onZoneSelect, onCharacterSelect
         const next = Math.max(0.52, Math.min(1.25, world.scale.x + amount));
         gsap.to(world.scale, { x: next, y: next, duration: 0.16 });
       };
-      element._tweetmintCleanup = () => element.removeEventListener('wheel', wheel);
-      const priorCleanup = element._tweetmintCleanup;
       element._tweetmintCleanup = () => {
-        priorCleanup();
         element.removeEventListener('pointerdown', pointerDown);
         element.removeEventListener('pointermove', pointerMove);
         element.removeEventListener('pointerup', pointerUp);
@@ -229,7 +219,7 @@ export default function PlazaScene({ characters, onZoneSelect, onCharacterSelect
         <button type="button" onClick={() => host.current?._tweetmintZoom?.(-0.12)} aria-label="Zoom out">−</button>
         <button type="button" onClick={() => host.current?._tweetmintReset?.()} aria-label="Reset world view">◎</button>
       </div>
-      <p className="scene-hint">DRAG TO PAN · SCROLL TO ZOOM · CLICK A PLACE OR PERSON</p>
+      <p className="scene-hint">DRAG TO PAN · USE CONTROLS TO ZOOM · CLICK A PLACE OR PERSON</p>
     </div>
   );
 }

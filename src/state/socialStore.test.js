@@ -10,6 +10,7 @@ import {
   getPostById,
   getTrendingPosts,
   reactionTotal,
+  recordProfileVisit,
   sharePost,
   toggleReaction,
 } from './socialStore.js';
@@ -29,6 +30,18 @@ describe('fictional community seed', () => {
 });
 
 describe('local social state helpers', () => {
+  it('records profile visits for plaza members', () => {
+    const state = createInitialSocialState();
+    const characterId = state.characters[0].id;
+    const next = recordProfileVisit(state, characterId);
+
+    expect(next.activity[0]).toMatchObject({
+      type: 'profile-visited',
+      actorId: state.currentUser.id,
+      characterId,
+    });
+  });
+
   it('creates a local post without mutating the prior state', () => {
     const state = createInitialSocialState();
     const next = createPost(state, { content: 'A visitor wrote this in the local demo.' });

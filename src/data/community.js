@@ -2,7 +2,7 @@
 // source of X, wallet, market, or on-chain data.
 
 export const FICTIONAL_COMMUNITY_NOTICE =
-  'Local fictional community demo — posts, reactions, tokens, and activity are not verified X or blockchain events.';
+  'Community posts, reactions, tokens, and activity are not verified X or blockchain events.';
 
 export const REACTION_TYPES = [
   'laugh',
@@ -477,7 +477,7 @@ const postBlueprints = [
     author: 'mooncat',
     topic: 'crypto-culture',
     subject: 'a tiny coin garden',
-    content: 'The coin garden is for fictional tickers only. Please water responsibly.',
+    content: 'The coin garden is for tickers only. Please water responsibly.',
     token: 'fictional-token-moss',
   },
   {
@@ -628,7 +628,7 @@ const postBlueprints = [
     author: 'mooncat',
     topic: 'crypto-culture',
     subject: 'a ticker doodle',
-    content: 'Doodled a fictional ticker on a napkin. The napkin has no liquidity and excellent vibes.',
+    content: 'Doodled a ticker on a napkin. The napkin has no liquidity and excellent vibes.',
     token: 'fictional-token-moon',
   },
   {
@@ -705,8 +705,8 @@ export const fictionalPosts = postBlueprints.map((post, index) => ({
 
 const genericCommentsByTopic = {
   programming: ['That is exactly the sort of fix that deserves a quiet celebration.', 'Saving this for the next debugging ritual.'],
-  'crypto-culture': ['Excellent fictional coin-garden energy.', 'The disclaimer makes this the safest ticker in the plaza.'],
-  'internet-humor': ['This belongs in the permanent internet museum.', 'I laughed in a very responsible, local-demo way.'],
+  'crypto-culture': ['Excellent coin-garden energy.', 'The disclaimer makes this the safest ticker in the plaza.'],
+  'internet-humor': ['This belongs in the permanent internet museum.', 'I laughed in a very responsible way.'],
   everyday: ['There is real wisdom in this ordinary little crisis.', 'The plaza agrees with this observation.'],
   social: ['This is why I keep a notebook for stray internet thoughts.', 'A very good entry for the community archive.'],
   'creative-code': ['That tiny detail is doing a lot of emotional work.', 'Please let the pixels know they are appreciated.'],
@@ -910,8 +910,8 @@ export const createInitialSocialState = () => ({
   notice: FICTIONAL_COMMUNITY_NOTICE,
   currentUser: {
     id: 'local-demo-visitor',
-    handle: '@visitor',
-    displayName: 'Local Demo Visitor',
+    handle: '@mikapixel',
+    displayName: 'Mika Pixel',
     accountType: 'local-demo-user',
     isFictional: false,
     isLocalOnly: true,
