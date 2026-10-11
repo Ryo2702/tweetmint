@@ -45,6 +45,7 @@ import {
 } from './state/socialStore.js';
 
 const STORAGE_KEY = 'tweetmint.local-social-state.v1';
+const MINT_LOOKUP_STORAGE_KEY = 'tweetmint.local-mint-lookup.v1';
 const reactionEmoji = {
   laugh: '😂', heart: '♥', fire: '🔥', rocket: '🚀', shocked: '😮', crying: '😭', skull: '💀', bullish: '🐂', bearish: '🐻'
 };
@@ -97,6 +98,19 @@ function shallowState(state) {
   return JSON.stringify(state);
 }
 
+function readMintLookup() {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(MINT_LOOKUP_STORAGE_KEY) || 'null');
+    return {
+      mintUrl: typeof stored?.mintUrl === 'string' ? stored.mintUrl : '',
+      mintSource: stored?.mintSource?.ok && typeof stored.mintSource.postId === 'string' ? stored.mintSource : null,
+      mintPreview: stored?.mintPreview && typeof stored.mintPreview === 'object' ? stored.mintPreview : null
+    };
+  } catch {
+    return { mintUrl: '', mintSource: null, mintPreview: null };
+  }
+}
+
 const mintStatusMessages = {
   'invalid-url': 'Enter a complete X post URL.',
   'unsupported-domain': 'Use an x.com or twitter.com post URL.',
@@ -117,10 +131,11 @@ export default function App() {
   const [commentText, setCommentText] = useState('');
   const [replyingTo, setReplyingTo] = useState(null);
   const [filter, setFilter] = useState('trending');
-  const [mintUrl, setMintUrl] = useState('');
-  const [mintStatus, setMintStatus] = useState('idle');
-  const [mintSource, setMintSource] = useState(null);
-  const [mintPreview, setMintPreview] = useState(null);
+  const [mintLookup] = useState(readMintLookup);
+  const [mintUrl, setMintUrl] = useState(mintLookup.mintUrl);
+  const [mintStatus, setMintStatus] = useState(mintLookup.mintPreview ? 'ready' : 'idle');
+  const [mintSource, setMintSource] = useState(mintLookup.mintSource);
+  const [mintPreview, setMintPreview] = useState(mintLookup.mintPreview);
   const [toasts, setToasts] = useState([]);
   const [autonomyPaused, setAutonomyPaused] = useState(false);
   const { panel, selectedPostId, selectedCharacterId, openPanel, closePanel } = usePlazaUi();
@@ -140,6 +155,12 @@ export default function App() {
   useEffect(() => {
     try { window.localStorage.setItem(STORAGE_KEY, shallowState(social)); } catch { /* local persistence is best-effort only */ }
   }, [social]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(MINT_LOOKUP_STORAGE_KEY, shallowState({ mintUrl, mintSource, mintPreview }));
+    } catch { /* lookup persistence is best-effort only */ }
+  }, [mintUrl, mintSource, mintPreview]);
 
   useEffect(() => {
     if (autonomyPaused) return undefined;
@@ -321,8 +342,15 @@ export default function App() {
   };
 
   const resetLocalWorld = () => {
-    try { window.localStorage.removeItem(STORAGE_KEY); } catch { /* reset still works in memory */ }
+    try {
+      window.localStorage.removeItem(STORAGE_KEY);
+      window.localStorage.removeItem(MINT_LOOKUP_STORAGE_KEY);
+    } catch { /* reset still works in memory */ }
     setSocial(createInitialSocialState());
+    setMintUrl('');
+    setMintStatus('idle');
+    setMintSource(null);
+    setMintPreview(null);
     notify('The plaza has been reset.');
   };
 
