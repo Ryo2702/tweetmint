@@ -75,4 +75,14 @@ describe('xApi', () => {
       expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer server-only-token' }) })
     );
   });
+
+  it('preserves a credits-depleted response for the client', async () => {
+    const response = mockResponse();
+    await createXApiHandler({
+      bearerToken: 'server-only-token',
+      fetchImpl: vi.fn().mockResolvedValue({ ok: false, status: 402 })
+    })({ url: '/posts/123' }, response);
+    expect(response.statusCode).toBe(402);
+    expect(JSON.parse(response.body).error.code).toBe('credits-depleted');
+  });
 });

@@ -61,6 +61,7 @@ function upstreamError(status) {
   if (status === 403) return { code: 'private', message: 'The X post is private or inaccessible.' };
   if (status === 404) return { code: 'deleted-post', message: 'The X post was not found or is unavailable.' };
   if (status === 429) return { code: 'rate-limit', message: 'The X API rate limit was reached.' };
+  if (status === 402) return { code: 'credits-depleted', message: 'The X API account has no remaining credits.' };
   return { code: 'api-unavailable', message: 'The X API returned an unavailable response.' };
 }
 
