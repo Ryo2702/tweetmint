@@ -392,6 +392,28 @@ export default function App() {
   );
 }
 
+function StatsBoard({ stats }) {
+  const entries = [
+    ['TOTAL POSTS', stats.totalPosts],
+    ['POSTS TODAY', stats.postsToday],
+    ['TOTAL COMMENTS', stats.totalComments],
+    ['TOTAL REACTIONS', stats.totalReactions],
+    ['TOTAL SHARES', stats.totalShares],
+    ['TOTAL COINS MINTED', stats.totalCoinsMinted],
+    ['COINS MINTED TODAY', stats.coinsMintedToday],
+  ];
+  return <aside className="stats-board" aria-label="Live community statistics"><header><span>✦ PLAZA STATS</span><span>SOLANA</span></header><div className="stats-grid">{entries.map(([label, value]) => <div className="stat-item" key={label}><strong>{value}</strong><span>{label}</span></div>)}</div></aside>;
+}
+
+function AnnouncementStack({ announcements, onOpen, onHistory }) {
+  if (!announcements.length) return null;
+  return <aside className="announcement-stack" aria-label="Live announcements"><header><span>✦ LIVE EVENTS</span><button type="button" onClick={onHistory}>history</button></header>{announcements.slice(0, 3).map((announcement) => <button className="announcement-card" type="button" key={announcement.id} onClick={() => announcement.postId && onOpen({ id: announcement.postId })}><span className="announcement-icon">✦</span><span>{announcement.text}</span></button>)}</aside>;
+}
+
+function AnnouncementsWindow({ announcements, onOpen, onClose }) {
+  return <div className="floating-window announcements-window"><PixelWindow eyebrow="EVENT LOG" title="Announcement history" onClose={onClose}><div className="window-body compact">{announcements.slice(0, 30).map((announcement) => <button className="announcement-history-item" type="button" key={announcement.id} onClick={() => announcement.postId && onOpen({ id: announcement.postId })}><span>{announcement.text}</span><time>{formatCompactDate(announcement.createdAt)}</time></button>)}</div></PixelWindow></div>;
+}
+
 function ComposerWindow({ text, setText, onPublish, onClose }) {
   return <div className="floating-window composer-window"><PixelWindow eyebrow="POST TERMINAL" title="Compose for the plaza" onClose={onClose}><div className="window-body"><p className="panel-note"><TerminalSquare />This creates a browser-local post only. It is not published to X or a shared service.</p><textarea className="composer-textarea" value={text} maxLength="500" placeholder="What is happening in the plaza?" onChange={(event) => setText(event.target.value)} /><div className="composer-footer"><span className="counter">{text.length}/500</span><button className="pixel-button primary" type="button" onClick={onPublish}><Send /> Publish local post</button></div></div></PixelWindow></div>;
 }

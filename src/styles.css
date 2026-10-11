@@ -267,6 +267,35 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .activity-item strong { color: #b8ff3b; }
 .activity-item button { padding: 0; color: inherit; background: none; border: 0; text-align: left; text-decoration: underline; }
 
+.stats-board, .announcement-stack {
+  position: absolute;
+  z-index: 8;
+  left: 18px;
+  width: min(270px, calc(100% - 36px));
+  color: #f7f0d8;
+  background: rgba(9, 13, 10, .94);
+  border: 2px solid #77dbe8;
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, .72);
+}
+.stats-board { top: 15px; }
+.stats-board header, .announcement-stack header { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; color: #0e130e; background: #77dbe8; font-size: 9px; font-weight: 900; letter-spacing: .08em; }
+.stats-board header span, .announcement-stack header span { color: #164b52; }
+.stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; padding: 5px; background: #223027; }
+.stat-item { padding: 6px; background: #101710; }
+.stat-item strong { display: block; color: #b8ff3b; font-size: 15px; line-height: 1; }
+.stat-item span { display: block; margin-top: 4px; color: #aeb6a8; font-size: 7px; line-height: 1.2; }
+.announcement-stack { top: 195px; border-color: #ffb765; }
+.announcement-stack header { color: #1d1309; background: #ffb765; }
+.announcement-stack header span { color: #633c19; }
+.announcement-stack header button { padding: 0; color: #633c19; background: none; border: 0; font-size: 8px; text-transform: uppercase; }
+.announcement-card { display: flex; align-items: flex-start; gap: 7px; width: 100%; padding: 8px 10px; color: #e9e2cf; background: #111811; border: 0; border-bottom: 1px dashed #4a5548; font-size: 9px; line-height: 1.35; text-align: left; }
+.announcement-card:last-child { border-bottom: 0; }
+.announcement-card:hover { color: #10140e; background: #b8ff3b; }
+.announcement-icon { color: #ffb765; }
+.announcement-history-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; width: 100%; padding: 9px 0; color: #e9e2cf; background: none; border: 0; border-bottom: 1px dashed #4a5548; font-size: 10px; text-align: left; }
+.announcement-history-item time { flex: 0 0 auto; color: #9ea697; font-size: 8px; }
+.floating-window.announcements-window { top: 108px; left: 18px; width: min(430px, calc(100vw - 34px)); }
+
 .quick-dock {
   position: absolute;
   z-index: 7;
