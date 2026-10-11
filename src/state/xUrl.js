@@ -19,7 +19,7 @@ export function parseXPostUrl(value) {
     return failure('invalid-url');
   }
 
-  if (!['http:', 'https:'].includes(url.protocol)) return failure('invalid-url');
+  if (url.protocol !== 'https:') return failure('invalid-url');
   if (!SUPPORTED_HOSTS.has(url.hostname.toLowerCase())) return failure('unsupported-domain');
 
   const segments = url.pathname.split('/').filter(Boolean);

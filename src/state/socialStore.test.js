@@ -3,6 +3,7 @@ import {
   addComment,
   createInitialSocialState,
   createPost,
+  confirmTokenLaunch,
   deleteComment,
   deletePost,
   editComment,
@@ -12,6 +13,7 @@ import {
   getTrendingPosts,
   reactionTotal,
   recordProfileVisit,
+  runAutonomousActivity,
   sharePost,
   toggleReaction,
 } from './socialStore.js';
@@ -24,6 +26,8 @@ describe('fictional community seed', () => {
     expect(state.isLocalOnly).toBe(true);
     expect(state.characters).toHaveLength(25);
     expect(state.characters.every((character) => character.isFictional)).toBe(true);
+    expect(state.characters.every((character) => Array.isArray(character.conversationHistory))).toBe(true);
+    expect(new Set(state.characters.map((character) => character.movementPattern)).size).toBeGreaterThan(1);
     expect(state.posts).toHaveLength(60);
     expect(state.comments.length).toBeGreaterThanOrEqual(100);
     expect(state.posts.every((post) => post.isFictional)).toBe(true);
@@ -42,6 +46,49 @@ describe('local social state helpers', () => {
     expect(stats.postsToday).toBe(1);
     expect(stats.totalCoinsMinted).toBe(1);
     expect(stats.coinsMintedToday).toBe(1);
+  });
+
+  it('only records a coin announcement for a confirmed Solana launch', () => {
+    const state = createInitialSocialState();
+    const next = confirmTokenLaunch(state, {
+      token: { id: 'solana-chair', ticker: 'CHAIR', mintAddress: 'MintAddress123' },
+      confirmedAt: '2026-10-12T04:00:00.000Z',
+    });
+
+    expect(next.tokens.at(-1)).toMatchObject({ verifiedOnChain: true, status: 'deployed' });
+    expect(next.announcements[0]).toMatchObject({ type: 'coin-launch', tokenId: 'solana-chair' });
+  });
+
+  it('queues a milestone only when the verified coin total reaches it', () => {
+    let state = createInitialSocialState();
+    for (let index = 0; index < 10; index += 1) {
+      state = confirmTokenLaunch(state, {
+        token: { id: `solana-${index}`, ticker: `C${index}`, mintAddress: `Mint${index}` },
+        confirmedAt: '2026-10-12T04:00:00.000Z',
+      });
+    }
+
+    expect(getCommunityStats(state, new Date('2026-10-12T12:00:00.000Z')).totalCoinsMinted).toBe(10);
+    expect(state.announcementHistory.some((item) => item.type === 'coin-milestone' && item.key === 'coin-milestone-10')).toBe(true);
+  });
+
+  it('persists autonomous character posts and announces them', () => {
+    const state = createInitialSocialState();
+    const next = runAutonomousActivity(state, () => 0, 'post');
+
+    expect(next.posts).toHaveLength(state.posts.length + 1);
+    expect(next.posts[0].isFictional).toBe(true);
+    expect(next.announcements[0]).toMatchObject({ type: 'new-post', postId: next.posts[0].id });
+  });
+
+  it('announces a conversation milestone from the post owner', () => {
+    const state = createInitialSocialState();
+    const post = state.posts[0];
+    const first = addComment(state, { postId: post.id, content: 'A fifth reply.' });
+    const next = addComment(first, { postId: post.id, content: 'One more thought.' });
+
+    expect(next.announcements.some((item) => item.key === `conversation-${post.id}`)).toBe(true);
+    expect(next.announcements.find((item) => item.key === `conversation-${post.id}`).text).toContain('received');
   });
 
   it('records profile visits for plaza members', () => {

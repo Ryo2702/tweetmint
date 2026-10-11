@@ -28,6 +28,7 @@ describe('X post URL parsing', () => {
     ['https://x.com/username', 'missing-post-id'],
     ['https://x.com/search?q=status/123', 'missing-post-id'],
     ['https://x.com/username/status/not-a-number', 'missing-post-id'],
+    ['http://x.com/username/status/1234567890123456789', 'invalid-url'],
     ['not a URL', 'invalid-url'],
   ])('rejects %s', (value, reason) => {
     expect(parseXPostUrl(value)).toEqual({ ok: false, reason });

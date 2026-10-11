@@ -4,11 +4,33 @@ import { useEffect, useRef } from 'react';
 
 const WORLD = { width: 1360, height: 760 };
 
+const activityBubble = {
+  'post-created': 'sit · type',
+  'comment-created': 'replying...',
+  'post-shared': '↗ share',
+  'post-read': 'reading',
+  'browse-trending': 'trend',
+  'browse-coins': 'coins',
+  'conversation-started': 'chat',
+  'profile-visited': 'visit',
+};
+const reactionBubble = { laugh: 'haha', heart: '♥', fire: '🔥', rocket: '🚀', shocked: '😮', crying: '😭', skull: '💀' };
+const actionFocus = {
+  'post-created': [340, 540],
+  'comment-created': [340, 540],
+  'post-read': [575, 385],
+  'post-shared': [575, 385],
+  'browse-trending': [820, 260],
+  'browse-coins': [1135, 455],
+  'conversation-started': [1080, 240],
+};
+
 const zones = [
   { id: 'terminal', label: 'POST TERMINAL', x: 250, y: 490, w: 185, h: 95, color: 0xb7ff3c },
   { id: 'feed', label: 'COMMUNITY FEED', x: 472, y: 332, w: 212, h: 102, color: 0x77dbe8 },
   { id: 'trending', label: 'TRENDING WALL', x: 736, y: 205, w: 196, h: 104, color: 0xc393ff },
   { id: 'mint', label: 'MINT MACHINE', x: 80, y: 185, w: 190, h: 150, color: 0xffa14d },
+  { id: 'wallet', label: 'WALLET STATION', x: 35, y: 380, w: 190, h: 88, color: 0x77dbe8 },
   { id: 'trading', label: 'TRADING CORNER', x: 1045, y: 402, w: 200, h: 105, color: 0xb7ff3c },
   { id: 'lounge', label: 'SOCIAL LOUNGE', x: 972, y: 185, w: 218, h: 106, color: 0xc393ff }
 ];
@@ -91,9 +113,18 @@ function makeCharacter(character, index) {
   return { person, bubble, bubbleText, character, phase: index * 0.72, baseX: character.x, baseY: character.y };
 }
 
-export default function PlazaScene({ characters, onZoneSelect, onCharacterSelect }) {
+export default function PlazaScene({ characters, activity = [], paused = false, walletConnected = false, onZoneSelect, onCharacterSelect }) {
   const host = useRef(null);
+  const pausedRef = useRef(paused);
+  const activityByActorRef = useRef(new Map());
   const callbacks = useRef({ onZoneSelect, onCharacterSelect });
+  pausedRef.current = paused;
+  activityByActorRef.current = new Map(
+    activity.reduce((entries, event) => {
+      if (event?.actorId && !entries.some(([actorId]) => actorId === event.actorId)) entries.push([event.actorId, event]);
+      return entries;
+    }, []),
+  );
   callbacks.current = { onZoneSelect, onCharacterSelect };
 
   useEffect(() => {
@@ -132,7 +163,10 @@ export default function PlazaScene({ characters, onZoneSelect, onCharacterSelect
       for (let y = 0; y < WORLD.height; y += 26) paving.moveTo(0, y).lineTo(WORLD.width, y).stroke({ color: 0xb9b09b, width: 1, alpha: 0.05 });
       world.addChild(paving);
 
-      zones.forEach((zone) => world.addChild(makeZone(zone)));
+      const sceneZones = zones.map((zone) => zone.id === 'wallet'
+        ? { ...zone, label: walletConnected ? 'WALLET CONNECTED' : zone.label, color: walletConnected ? 0xb7ff3c : zone.color }
+        : zone);
+      sceneZones.forEach((zone) => world.addChild(makeZone(zone)));
 
       const people = characters.slice(0, 25).map(makeCharacter);
       people.forEach(({ person }) => world.addChild(person));
@@ -141,7 +175,7 @@ export default function PlazaScene({ characters, onZoneSelect, onCharacterSelect
         const bounds = element.getBoundingClientRect();
         const x = (event.clientX - bounds.left - world.x) / world.scale.x;
         const y = (event.clientY - bounds.top - world.y) / world.scale.y;
-        const zone = zones.find((item) => x >= item.x && x <= item.x + item.w && y >= item.y && y <= item.y + item.h);
+        const zone = sceneZones.find((item) => x >= item.x && x <= item.x + item.w && y >= item.y && y <= item.y + item.h);
         if (zone) callbacks.current.onZoneSelect(zone.id);
         else {
           const match = people.find(({ person }) => Math.abs(person.x - x) < 18 && Math.abs(person.y - y) < 28);
@@ -151,12 +185,32 @@ export default function PlazaScene({ characters, onZoneSelect, onCharacterSelect
       element.addEventListener('pointerup', pointerUp);
 
       app.ticker.add(() => {
+        if (pausedRef.current) return;
         const now = performance.now() / 1000;
         people.forEach((entry, index) => {
           const speed = 0.75 + (index % 4) * 0.11;
-          entry.person.y = entry.baseY + Math.sin(now * speed + entry.phase) * 2;
-          entry.person.x = entry.baseX + Math.cos(now * speed * 0.56 + entry.phase) * 3;
-          entry.bubble.visible = index % 7 === Math.floor(now / 3) % 7;
+          const event = activityByActorRef.current.get(entry.character.id);
+          const eventTime = event ? Date.parse(event.createdAt) : NaN;
+          const isFresh = Number.isFinite(eventTime) && Date.now() - eventTime < 12_000;
+          if (event && event.id !== entry.lastActivityId) {
+            entry.lastActivityId = event.id;
+            entry.actionUntil = now + 5;
+            entry.actionStarted = now;
+          }
+          const isActing = Boolean(event && now < (entry.actionUntil || 0));
+          const focus = actionFocus[event?.type];
+          const travel = isActing ? Math.sin(Math.min(1, Math.max(0, (now - entry.actionStarted) / 5)) * Math.PI) : 0;
+          const focusX = focus ? Math.max(-42, Math.min(42, focus[0] - entry.baseX)) * travel : 0;
+          const focusY = focus ? Math.max(-30, Math.min(30, focus[1] - entry.baseY)) * travel : 0;
+          entry.person.y = entry.baseY + Math.sin(now * speed + entry.phase) * 2 + focusY;
+          entry.person.x = entry.baseX + Math.cos(now * speed * 0.56 + entry.phase) * 3 + focusX;
+          entry.person.scale.y = isActing && event.type === 'post-created' ? 0.86 : 1;
+          const actionText = event && (isFresh || now < (entry.actionUntil || 0))
+            ? event.type === 'reaction-added' ? reactionBubble[event.reactionType] || '♥' : activityBubble[event.type]
+            : '';
+          const nextBubbleText = actionText || (index % 5 === 0 ? 'typing...' : index % 4 === 0 ? 'haha' : '');
+          if (entry.bubbleText.text !== nextBubbleText) entry.bubbleText.text = nextBubbleText;
+          entry.bubble.visible = Boolean(actionText) || (index % 7 === Math.floor(now / 3) % 7 && Boolean(entry.bubbleText.text));
         });
       });
 
@@ -180,7 +234,7 @@ export default function PlazaScene({ characters, onZoneSelect, onCharacterSelect
       if (element?._tweetmintCleanup) element._tweetmintCleanup();
       if (initialized && app) app.destroy(true, { children: true });
     };
-  }, [characters]);
+  }, [characters, walletConnected]);
 
   return (
     <div className="plaza-canvas-shell">

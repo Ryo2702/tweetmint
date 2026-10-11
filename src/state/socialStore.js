@@ -13,12 +13,30 @@ export {
   createInitialSocialState,
 };
 
-const LOCAL_DEMO_EPOCH = Date.UTC(2026, 9, 11, 0, 0, 0);
 const MAX_POST_LENGTH = 500;
 const MAX_COMMENT_LENGTH = 400;
+const COIN_MILESTONES = new Set([10, 25, 50, 100]);
+const ANNOUNCEMENT_PRIORITY = {
+  'coin-launch': 100,
+  'creator-claim': 90,
+  'coin-milestone': 80,
+  'popular-post': 70,
+  'new-post': 40,
+  'new-conversation': 20,
+  'shared-post': 20,
+};
+const EVENT_NAMES = {
+  'post-created': 'post:created',
+  'comment-created': 'comment:created',
+  'reaction-added': 'reaction:added',
+  'reaction-removed': 'reaction:removed',
+  'post-shared': 'post:shared',
+  'token-launch-confirmed': 'token:launch-confirmed',
+  'creator-claimed': 'creator:claimed',
+};
 
 const localTimestamp = (state) =>
-  new Date(LOCAL_DEMO_EPOCH + (state.localClock || 0) * 1000).toISOString();
+  new Date(Date.now() + (state.localClock || 0) * 1000).toISOString();
 
 const knownAuthor = (state, authorId) =>
   authorId === state.currentUser?.id || state.characters.some((character) => character.id === authorId);
@@ -42,15 +60,36 @@ const getActor = (state, actorId) =>
 const announcementFor = (state, activity) => {
   const actor = getActor(state, activity.actorId);
   const post = activity.postId ? getPostById(state, activity.postId) : null;
+  if (activity.type === 'token-launch-confirmed' || activity.type === 'creator-claimed') {
+    const token = (state.tokens || []).find((item) => item.id === activity.tokenId);
+    if (token) {
+      return {
+        type: activity.type === 'creator-claimed' ? 'creator-claim' : 'coin-launch',
+        key: activity.id,
+        text: activity.type === 'creator-claimed'
+          ? `Creator verified for $${token.ticker}!`
+          : `NEW COIN MINTED: $${token.ticker}${token.name ? ` · ${token.name}` : ''}`,
+        tokenId: token.id,
+        sourcePostId: token.sourcePostId,
+        mintAddress: token.mintAddress,
+        explorerUrl: token.mintAddress ? `https://explorer.solana.com/address/${encodeURIComponent(token.mintAddress)}` : null,
+      };
+    }
+  }
   if (!actor) return null;
   if (activity.type === 'post-created' && post) {
     return { type: 'new-post', key: activity.id, text: `${actor.handle || `@${actor.username}`} just published a new post!`, postId: post.id };
   }
   if (activity.type === 'comment-created' && post) {
-    return { type: 'new-conversation', key: activity.id, text: `${actor.handle || `@${actor.username}`} started a new conversation.` , postId: post.id };
+    const postAuthor = getActor(state, post.authorId);
+    if (post.commentCount >= 5 && postAuthor) {
+      return { type: 'new-conversation', key: `conversation-${post.id}`, text: `${postAuthor.handle || `@${postAuthor.username}`} received ${post.commentCount} new replies!`, postId: post.id };
+    }
+    return { type: 'new-conversation', key: activity.id, text: `${actor.handle || `@${actor.username}`} started a new conversation.`, postId: post.id };
   }
   if (activity.type === 'post-shared' && post) {
-    return { type: 'shared-post', key: activity.id, text: `${actor.handle || `@${actor.username}`} shared a post.`, postId: post.id };
+    const postAuthor = getActor(state, post.authorId);
+    return { type: 'shared-post', key: activity.id, text: `${actor.handle || `@${actor.username}`} shared ${postAuthor?.handle || 'a post'}!`, postId: post.id };
   }
   if (activity.type === 'reaction-added' && post && reactionTotal(post) >= 25) {
     return { type: 'popular-post', key: `popular-${post.id}`, text: `This post just reached ${reactionTotal(post)} reactions!`, postId: post.id };
@@ -58,30 +97,39 @@ const announcementFor = (state, activity) => {
   return null;
 };
 
+const addAnnouncement = (state, candidate) => {
+  if (!candidate || state.announcementHistory?.some((item) => item.key === candidate.key)) return state;
+  const announcement = {
+    ...candidate,
+    id: nextId(state, 'announcement', 'announcement'),
+    event: 'announcement:created',
+    priority: ANNOUNCEMENT_PRIORITY[candidate.type] || 0,
+  };
+  const sortAnnouncements = (left, right) =>
+    (right.priority || 0) - (left.priority || 0) || String(right.createdAt).localeCompare(String(left.createdAt));
+  return {
+    ...state,
+    announcements: [announcement, ...(state.announcements || [])].sort(sortAnnouncements).slice(0, 4),
+    announcementHistory: [announcement, ...(state.announcementHistory || [])].slice(0, 100),
+    nextIds: nextIds(state, 'announcement'),
+  };
+};
+
 const appendActivity = (state, activity) => {
   const candidate = announcementFor(state, activity);
-  const alreadyShown = candidate && state.announcementHistory?.some((item) => item.key === candidate.key);
-  const announcement = candidate && !alreadyShown
-    ? { ...candidate, id: nextId(state, 'announcement', 'announcement'), createdAt: activity.createdAt }
-    : null;
   const activityState = {
     ...state,
     activity: [activity, ...(state.activity || [])].slice(0, 200),
     nextIds: nextIds(state, 'activity'),
   };
-  if (!announcement) return activityState;
-  return {
-    ...activityState,
-    announcements: [announcement, ...(state.announcements || [])].slice(0, 4),
-    announcementHistory: [announcement, ...(state.announcementHistory || [])].slice(0, 100),
-    nextIds: nextIds(activityState, 'announcement'),
-  };
+  return addAnnouncement(activityState, candidate && { ...candidate, createdAt: activity.createdAt });
 };
 
 const makeActivity = (state, details) => ({
   id: nextId(state, 'activity', 'local-activity'),
   createdAt: localTimestamp(state),
   source: 'local-demo',
+  event: details.event || EVENT_NAMES[details.type] || details.type,
   isFictional: Boolean(details.isFictional),
   message: details.isFictional ? 'Fictional local community activity' : 'Local demo activity',
   ...details,
@@ -232,7 +280,9 @@ export const runAutonomousActivity = (state, random = Math.random, requestedActi
   const characters = state.characters || [];
   if (!characters.length) return state;
   const actor = chooseCharacter(characters, random);
-  const action = requestedAction || randomItem(['react', 'react', 'comment', 'reply', 'share', 'post', 'visit'], random);
+  const action = requestedAction && requestedAction !== 'idle'
+    ? requestedAction
+    : randomItem(['react', 'react', 'comment', 'reply', 'share', 'post', 'read', 'browse-trending', 'browse-coins', 'talk', 'visit'], random);
 
   if (action === 'post') {
     return createPost(state, {
@@ -270,8 +320,46 @@ export const runAutonomousActivity = (state, random = Math.random, requestedActi
     return post ? sharePost(state, { postId: post.id, actorId: actor.id }) : state;
   }
 
+  if (action === 'read') {
+    const post = randomItem(state.posts, random);
+    return post ? recordCharacterActivity(state, { type: 'post-read', actorId: actor.id, postId: post.id }) : state;
+  }
+
   const target = randomItem(characters, random);
-  return target ? recordCharacterActivity(state, { type: action === 'visit' ? 'profile-visited' : 'area-visited', actorId: actor.id, characterId: target.id }) : state;
+  return target ? recordCharacterActivity(state, {
+    type: action === 'visit' ? 'profile-visited' : action === 'talk' ? 'conversation-started' : action,
+    actorId: actor.id,
+    characterId: target.id,
+  }) : state;
+};
+
+export const confirmTokenLaunch = (state, input = {}) => {
+  const token = input.token;
+  if (!token?.id || !token.ticker || !token.mintAddress || state.tokens.some((item) => item.id === token.id)) return state;
+  const confirmedAt = input.confirmedAt || new Date().toISOString();
+  const nextState = {
+    ...state,
+    tokens: [...state.tokens, { ...token, status: 'deployed', verifiedOnChain: true, confirmedAt }],
+  };
+  const withLaunch = appendActivity(nextState, {
+    id: nextId(state, 'activity', 'local-activity'),
+    createdAt: confirmedAt,
+    source: 'solana-confirmed',
+    event: 'token:launch-confirmed',
+    type: 'token-launch-confirmed',
+    actorId: state.currentUser?.id,
+    tokenId: token.id,
+    isFictional: false,
+  });
+  const confirmedCount = withLaunch.tokens.filter(isConfirmedToken).length;
+  return COIN_MILESTONES.has(confirmedCount)
+    ? addAnnouncement(withLaunch, {
+      type: 'coin-milestone',
+      key: `coin-milestone-${confirmedCount}`,
+      text: `${confirmedCount} TweetMint coins successfully launched!`,
+      createdAt: confirmedAt,
+    })
+    : withLaunch;
 };
 
 export const editPost = (state, input = {}) => {

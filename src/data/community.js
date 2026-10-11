@@ -305,6 +305,8 @@ export const fictionalCharacters = characterBlueprints.map((character, index) =>
     currentActivity,
     activityFrequency: 0.8 + (index % 5) * 0.15,
     reactionPreferences: REACTION_TYPES.slice(index % REACTION_TYPES.length, (index % REACTION_TYPES.length) + 3),
+    conversationHistory: [],
+    movementPattern: ['wander', 'linger', 'loop'][index % 3],
   };
 });
 

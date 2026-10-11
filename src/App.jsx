@@ -23,7 +23,10 @@ import Avatar from './components/Avatar.jsx';
 import PostCard from './components/PostCard.jsx';
 import PlazaScene from './world/PlazaScene.jsx';
 import { usePlazaUi } from './state/uiStore.js';
+import { useWalletStore } from './state/walletStore.js';
 import { parseXPostUrl } from './state/xUrl.js';
+import { WALLET_PROVIDERS, subscribeWalletDiscovery, walletDisplayName } from './services/walletService.js';
+import { getExplorerUrl, networkLabel } from './services/solanaRpc.js';
 import {
   REACTION_TYPES,
   TRENDING_FILTERS,
@@ -113,19 +116,32 @@ export default function App() {
   const [commentText, setCommentText] = useState('');
   const [replyingTo, setReplyingTo] = useState(null);
   const [filter, setFilter] = useState('trending');
-  const [wallet, setWallet] = useState(null);
   const [mintUrl, setMintUrl] = useState('');
   const [mintStatus, setMintStatus] = useState('idle');
   const [mintSource, setMintSource] = useState(null);
   const [mintPreview, setMintPreview] = useState(null);
   const [toasts, setToasts] = useState([]);
+  const [autonomyPaused, setAutonomyPaused] = useState(false);
   const { panel, selectedPostId, selectedCharacterId, openPanel, closePanel } = usePlazaUi();
+  const walletState = useWalletStore();
+  const wallet = walletState.address ? { provider: walletDisplayName(walletState.selectedProvider), address: walletState.address } : null;
+
+  useEffect(() => {
+    const onDiscovery = () => {
+      const store = useWalletStore.getState();
+      store.discover();
+      if (store.status === 'disconnected') store.restore();
+    };
+    const unsubscribe = subscribeWalletDiscovery(onDiscovery);
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     try { window.localStorage.setItem(STORAGE_KEY, shallowState(social)); } catch { /* local persistence is best-effort only */ }
   }, [social]);
 
   useEffect(() => {
+    if (autonomyPaused) return undefined;
     let stopped = false;
     const timers = new Set();
     const schedule = (action, minimum, maximum) => {
@@ -142,11 +158,12 @@ export default function App() {
     schedule('share', 20_000, 60_000);
     schedule('post', 30_000, 90_000);
     schedule('visit', 7_000, 24_000);
+    schedule('idle', 8_000, 24_000);
     return () => {
       stopped = true;
       timers.forEach((timer) => window.clearTimeout(timer));
     };
-  }, []);
+  }, [autonomyPaused]);
 
   const characters = useMemo(
     () => social.characters.map((character, index) => hydrateCharacter(character, index)),
@@ -184,7 +201,7 @@ export default function App() {
   };
 
   const openZone = (zone) => {
-    const panelForZone = { terminal: 'composer', feed: 'feed', trending: 'trending', mint: 'mint', trading: 'tokens', lounge: 'community' };
+    const panelForZone = { terminal: 'composer', feed: 'feed', trending: 'trending', mint: 'mint', trading: 'tokens', lounge: 'community', wallet: 'wallet' };
     openPanel(panelForZone[zone] || 'feed');
   };
 
@@ -194,13 +211,13 @@ export default function App() {
     if (content.length > 500) return notify('Posts are capped at 500 characters.', 'error');
     setSocial((state) => createPost(state, { content }));
     setComposerText('');
-    notify('Local post published to this browser’s plaza.');
+    notify('Post published to the plaza.');
     closePanel();
   };
 
   const reactTo = (post, reactionType) => {
     setSocial((state) => toggleReaction(state, { targetType: 'post', targetId: post.id, reactionType }));
-    notify(`${reactionEmoji[reactionType]} reaction saved locally.`);
+    notify(`${reactionEmoji[reactionType]} reaction saved.`);
   };
 
   const reactToComment = (comment, reactionType) => {
@@ -210,11 +227,11 @@ export default function App() {
   const share = async (post, mode = 'repost') => {
     if (mode === 'link') {
       const link = `${window.location.origin}${window.location.pathname}#post-${post.id}`;
-      try { await navigator.clipboard.writeText(link); notify('Local post link copied.'); } catch { notify('Copy failed in this browser.', 'error'); }
+      try { await navigator.clipboard.writeText(link); notify('Post link copied.'); } catch { notify('Copy failed in this browser.', 'error'); }
       return;
     }
     setSocial((state) => sharePost(state, { postId: post.id }));
-    notify('Repost saved locally.');
+    notify('Repost saved.');
   };
 
   const submitComment = () => {
@@ -227,7 +244,7 @@ export default function App() {
     }));
     setCommentText('');
     setReplyingTo(null);
-    notify('Local comment added to this thread.');
+    notify('Comment added to this thread.');
   };
 
   const updateMintUrl = (value) => {
@@ -272,7 +289,14 @@ export default function App() {
         setMintStatus(response.status === 401 ? 'auth-failure' : response.status === 403 ? 'private' : response.status === 404 ? 'deleted-post' : response.status === 429 ? 'rate-limit' : 'api-unavailable');
         return;
       }
-      setMintPreview(await response.json());
+      let payload;
+      try {
+        payload = await response.json();
+      } catch {
+        setMintStatus('api-unavailable');
+        return;
+      }
+      setMintPreview(payload);
       setMintStatus('ready');
     } catch {
       setMintStatus('network-failure');
@@ -280,20 +304,22 @@ export default function App() {
   };
 
   const connectWallet = async (provider) => {
-    const candidate = provider === 'Phantom' ? window.phantom?.solana : window.solflare;
-    if (!candidate?.connect) {
-      notify(`${provider} was not detected. Install its official browser extension, then try again.`, 'error');
-      return;
-    }
+    const connection = await walletState.connect(provider);
+    if (connection) notify(`${connection.name} connected. Your Solana account is ready.`);
+    else if (useWalletStore.getState().connectionError) notify(useWalletStore.getState().connectionError, 'error');
+  };
+
+  const disconnectWallet = async () => {
+    const disconnected = await walletState.disconnect();
+    notify(disconnected ? 'Wallet disconnected from this browser.' : 'Wallet disconnect failed.', disconnected ? 'success' : 'error');
+  };
+
+  const copyWalletAddress = async (address) => {
     try {
-      const response = await candidate.connect();
-      const address = (response?.publicKey || candidate.publicKey)?.toString();
-      if (!address) throw new Error('No public address returned');
-      setWallet({ provider, address });
-      closePanel();
-      notify(`${provider} connected. Balance remains unavailable until an RPC is configured.`);
-    } catch (error) {
-      notify(`${provider} connection was not approved.`, 'error');
+      await navigator.clipboard.writeText(address);
+      notify('Full wallet address copied.');
+    } catch {
+      notify('Copy failed in this browser.', 'error');
     }
   };
 
@@ -309,7 +335,7 @@ export default function App() {
   const mobileNav = [
     ['world', 'World', Gamepad2], ['feed', 'Feed', MessageCircle], ['composer', 'Post', Feather], ['mint', 'Launch', Plus], ['tokens', 'Tokens', Coins]
   ];
-  const duplicateToken = mintSource && social.tokens.some((token) => token.sourcePostId === mintSource.postId || token.sourcePostUrl === mintSource.canonicalUrl);
+  const duplicateToken = mintSource && social.tokens.some((token) => String(token.sourcePostId) === mintSource.postId || token.sourcePostUrl === mintSource.canonicalUrl);
 
   return (
     <main className="app-shell">
@@ -323,7 +349,7 @@ export default function App() {
         </nav>
         <span className="topbar-spacer" />
         {wallet ? (
-          <button className="top-action" type="button" onClick={() => openPanel('wallet')}><Wallet size={14} /> {wallet.address.slice(0, 4)}…{wallet.address.slice(-4)}</button>
+          <button className="top-action" type="button" onClick={() => openPanel('wallet')}><span className="wallet-connected-dot" aria-hidden="true" /> <Wallet size={14} /> {wallet.provider} {wallet.address.slice(0, 4)}…{wallet.address.slice(-4)}</button>
         ) : (
           <button className="top-action" type="button" onClick={() => openPanel('wallet')}><Wallet size={14} /> Connect wallet</button>
         )}
@@ -331,25 +357,25 @@ export default function App() {
 
       <section className="world-page">
         <section className="plaza-stage" aria-label="TweetMint Social Plaza">
-          <PlazaScene characters={sceneCharacters} onZoneSelect={openZone} onCharacterSelect={showCharacter} />
+          <PlazaScene characters={sceneCharacters} activity={social.activity} paused={autonomyPaused} walletConnected={Boolean(walletState.address)} onZoneSelect={openZone} onCharacterSelect={showCharacter} />
 
           <div className="world-banner" aria-hidden="true">
             <p>THE SOCIAL PLAZA</p>
             <h1>EVERY POST IS A <span>COIN.</span></h1>
           </div>
 
-          <StatsBoard stats={communityStats} />
-          <AnnouncementStack announcements={social.announcements || []} onOpen={showPost} onHistory={() => openPanel('announcements')} />
+          <StatsBoard stats={communityStats} paused={autonomyPaused} onTogglePause={() => setAutonomyPaused((value) => !value)} />
+          <AnnouncementStack announcements={social.announcements || []} onOpen={showPost} onToken={() => openPanel('tokens')} onHistory={() => openPanel('announcements')} />
 
           <aside className="activity-board" aria-label="Recent community activity">
-            <header><span>✦ PLAZA PULSE</span><span>LOCAL</span></header>
+            <header><span>✦ PLAZA PULSE</span><span>COMMUNITY</span></header>
             <div className="activity-list">
               {social.activity.slice(0, 4).map((activity) => {
                 const actor = actorFor(activity.actorId);
                 const post = activity.postId ? getPostById(social, activity.postId) : null;
                 const visited = activity.characterId ? characterById.get(activity.characterId) : null;
-                const activityText = visited ? `visited ${visited.displayName}` : prettify(activity.type);
-                return <div className="activity-item" key={activity.id}><span className="activity-dot" /><button type="button" onClick={() => post && showPost(post)}><strong>{actor.displayName}</strong> {activityText}{post ? ` · “${post.content.slice(0, 28)}…”` : ''}</button></div>;
+                const activityText = activity.type === 'browse-trending' ? 'browsed Trending Wall' : activity.type === 'browse-coins' ? 'browsed Coin Garden' : activity.type === 'conversation-started' && visited ? `talked with ${visited.displayName}` : visited ? `visited ${visited.displayName}` : prettify(activity.type);
+                return <div className="activity-item" key={activity.id}><span className="activity-dot" /><button type="button" onClick={() => post && showPost(post)}><strong>{actor.displayName}</strong> {reactionEmoji[activity.reactionType] || ''} {activityText}{post ? ` · “${post.content.slice(0, 28)}…”` : ''}</button></div>;
               })}
             </div>
           </aside>
@@ -360,6 +386,7 @@ export default function App() {
             <button className="dock-button" type="button" onClick={() => openZone('trending')}><Flame /> Trending</button>
             <button className="dock-button" type="button" onClick={() => openZone('mint')}><TerminalSquare /> Mint station</button>
             <button className="dock-button" type="button" onClick={() => openZone('trading')}><Coins /> Coin garden</button>
+            <button className="dock-button" type="button" onClick={() => openZone('wallet')}><Wallet /> Wallet station</button>
           </nav>
 
           <AnimatePresence>
@@ -371,8 +398,8 @@ export default function App() {
                 {panel === 'profile' && selectedCharacter && <ProfileWindow character={selectedCharacter} posts={social.posts} getAuthor={actorFor} onOpen={showPost} onClose={closePanel} />}
                 {panel === 'mint' && <MintWindow value={mintUrl} onChange={updateMintUrl} status={mintStatus} statusMessage={mintStatusMessages[mintStatus]} source={mintSource} preview={mintPreview} duplicate={duplicateToken} onPaste={pasteMintUrl} onClear={() => updateMintUrl('')} onCheck={checkMintUrl} onClose={closePanel} />}
                 {panel === 'tokens' && <TokensWindow tokens={social.tokens} posts={social.posts} onOpen={showPost} onClose={closePanel} />}
-                {panel === 'announcements' && <AnnouncementsWindow announcements={social.announcementHistory || []} onOpen={showPost} onClose={closePanel} />}
-                {panel === 'wallet' && <WalletWindow wallet={wallet} onConnect={connectWallet} onDisconnect={() => { setWallet(null); notify('Wallet disconnected from this browser.'); }} onClose={closePanel} />}
+                {panel === 'announcements' && <AnnouncementsWindow announcements={social.announcementHistory || []} onOpen={showPost} onToken={() => openPanel('tokens')} onClose={closePanel} />}
+                {panel === 'wallet' && <WalletWindow wallet={wallet} walletState={walletState} onConnect={connectWallet} onDisconnect={disconnectWallet} onRefresh={() => walletState.refreshBalance()} onCopy={copyWalletAddress} onClose={closePanel} />}
               </motion.div>
             )}
           </AnimatePresence>
@@ -392,7 +419,7 @@ export default function App() {
   );
 }
 
-function StatsBoard({ stats }) {
+function StatsBoard({ stats, paused, onTogglePause }) {
   const entries = [
     ['TOTAL POSTS', stats.totalPosts],
     ['POSTS TODAY', stats.postsToday],
@@ -402,20 +429,20 @@ function StatsBoard({ stats }) {
     ['TOTAL COINS MINTED', stats.totalCoinsMinted],
     ['COINS MINTED TODAY', stats.coinsMintedToday],
   ];
-  return <aside className="stats-board" aria-label="Live community statistics"><header><span>✦ PLAZA STATS</span><span>SOLANA</span></header><div className="stats-grid">{entries.map(([label, value]) => <div className="stat-item" key={label}><strong>{value}</strong><span>{label}</span></div>)}</div></aside>;
+  return <aside className="stats-board" aria-label="Live community statistics"><header><span>✦ PLAZA STATS</span><span>SOLANA</span><button className="stats-pause" type="button" onClick={onTogglePause}>{paused ? 'play' : 'pause'}</button></header><div className="stats-grid">{entries.map(([label, value]) => <div className="stat-item" key={`${label}-${value}`}><strong>{value}</strong><span>{label}</span></div>)}</div></aside>;
 }
 
-function AnnouncementStack({ announcements, onOpen, onHistory }) {
+function AnnouncementStack({ announcements, onOpen, onToken, onHistory }) {
   if (!announcements.length) return null;
-  return <aside className="announcement-stack" aria-label="Live announcements"><header><span>✦ LIVE EVENTS</span><button type="button" onClick={onHistory}>history</button></header>{announcements.slice(0, 3).map((announcement) => <button className="announcement-card" type="button" key={announcement.id} onClick={() => announcement.postId && onOpen({ id: announcement.postId })}><span className="announcement-icon">✦</span><span>{announcement.text}</span></button>)}</aside>;
+  return <aside className="announcement-stack" aria-label="Live announcements"><header><span>✦ LIVE EVENTS</span><button type="button" onClick={onHistory}>history</button></header>{announcements.slice(0, 3).map((announcement) => <button className="announcement-card" type="button" key={announcement.id} onClick={() => announcement.postId ? onOpen({ id: announcement.postId }) : announcement.tokenId && onToken()}><span className="announcement-icon">✦</span><span>{announcement.text}</span></button>)}</aside>;
 }
 
-function AnnouncementsWindow({ announcements, onOpen, onClose }) {
-  return <div className="floating-window announcements-window"><PixelWindow eyebrow="EVENT LOG" title="Announcement history" onClose={onClose}><div className="window-body compact">{announcements.slice(0, 30).map((announcement) => <button className="announcement-history-item" type="button" key={announcement.id} onClick={() => announcement.postId && onOpen({ id: announcement.postId })}><span>{announcement.text}</span><time>{formatCompactDate(announcement.createdAt)}</time></button>)}</div></PixelWindow></div>;
+function AnnouncementsWindow({ announcements, onOpen, onToken, onClose }) {
+  return <div className="floating-window announcements-window"><PixelWindow eyebrow="EVENT LOG" title="Announcement history" onClose={onClose}><div className="window-body compact">{announcements.slice(0, 30).map((announcement) => <button className="announcement-history-item" type="button" key={announcement.id} onClick={() => announcement.postId ? onOpen({ id: announcement.postId }) : announcement.tokenId && onToken()}><span>{announcement.text}</span><time>{formatCompactDate(announcement.createdAt)}</time></button>)}</div></PixelWindow></div>;
 }
 
 function ComposerWindow({ text, setText, onPublish, onClose }) {
-  return <div className="floating-window composer-window"><PixelWindow eyebrow="POST TERMINAL" title="Compose for the plaza" onClose={onClose}><div className="window-body"><p className="panel-note"><TerminalSquare />This creates a browser-local post only. It is not published to X or a shared service.</p><textarea className="composer-textarea" value={text} maxLength="500" placeholder="What is happening in the plaza?" onChange={(event) => setText(event.target.value)} /><div className="composer-footer"><span className="counter">{text.length}/500</span><button className="pixel-button primary" type="button" onClick={onPublish}><Send /> Publish local post</button></div></div></PixelWindow></div>;
+  return <div className="floating-window composer-window"><PixelWindow eyebrow="POST TERMINAL" title="Compose for the plaza" onClose={onClose}><div className="window-body"><p className="panel-note"><TerminalSquare />This post stays in TweetMint and is not published to X or another service.</p><textarea className="composer-textarea" value={text} maxLength="500" placeholder="What is happening in the plaza?" onChange={(event) => setText(event.target.value)} /><div className="composer-footer"><span className="counter">{text.length}/500</span><button className="pixel-button primary" type="button" onClick={onPublish}><Send /> Publish post</button></div></div></PixelWindow></div>;
 }
 
 function FeedWindow({ posts, filter, setFilter, panel, getAuthor, onOpen, onReact, onShare, onClose }) {
@@ -439,7 +466,7 @@ function CommentThread({ comment, replies, getAuthor, currentUser, social, onRep
 
 function ProfileWindow({ character, posts, onOpen, onClose }) {
   const authored = posts.filter((post) => post.authorId === character.id);
-  return <div className="floating-window profile-window"><PixelWindow eyebrow="PLAZA MEMBER" title="Profile station" onClose={onClose}><div className="profile-hero"><Avatar character={character} size={52} /><div><h2 className="profile-name">{character.displayName}</h2><div className="profile-handle">{character.username}</div><p className="profile-bio">{character.isFictional ? `${character.personality}. Into ${(character.interests || []).join(', ')}.` : 'Posts are kept in this browser until a server is configured.'}</p></div></div><div className="profile-stats"><div className="profile-stat"><strong>{authored.length}</strong><span>posts</span></div><div className="profile-stat"><strong>{character.isFictional ? 'NPC' : 'LOCAL'}</strong><span>identity</span></div><div className="profile-stat"><strong>—</strong><span>followers</span></div></div><div className="window-body compact">{authored.slice(0, 4).map((post) => <button key={post.id} className="mini-action" type="button" onClick={() => onOpen(post)}>Open: {post.content.slice(0, 42)}…</button>)}</div></PixelWindow></div>;
+  return <div className="floating-window profile-window"><PixelWindow eyebrow="PLAZA MEMBER" title="Profile station" onClose={onClose}><div className="profile-hero"><Avatar character={character} size={52} /><div><h2 className="profile-name">{character.displayName}</h2><div className="profile-handle">{character.username}</div><p className="profile-bio">{character.isFictional ? `${character.personality}. Into ${(character.interests || []).join(', ')}.` : 'Posts are kept in this browser until a server is configured.'}</p></div></div><div className="profile-stats"><div className="profile-stat"><strong>{authored.length}</strong><span>posts</span></div><div className="profile-stat"><strong>{character.isFictional ? 'MEMBER' : 'VISITOR'}</strong><span>identity</span></div><div className="profile-stat"><strong>—</strong><span>followers</span></div></div><div className="window-body compact">{authored.slice(0, 4).map((post) => <button key={post.id} className="mini-action" type="button" onClick={() => onOpen(post)}>Open: {post.content.slice(0, 42)}…</button>)}</div></PixelWindow></div>;
 }
 
 function MintWindow({ value, onChange, status, statusMessage, source, preview, duplicate, onPaste, onClear, onCheck, onClose }) {
@@ -447,14 +474,30 @@ function MintWindow({ value, onChange, status, statusMessage, source, preview, d
   const author = previewData?.author?.username || previewData?.author?.name || previewData?.username || previewData?.authorName;
   const content = previewData?.text || previewData?.content;
   const parsed = Boolean(source?.postId);
-  return <div className="floating-window mint-window"><PixelWindow eyebrow="MINT STATION" title="Canonical launch control" onClose={onClose}><div className="mint-panel"><div className="mint-machine-art"><div className="mint-machine-screen">MINT OFFLINE<small>CONFIGURE SERVER TO ARM</small></div></div><p className="panel-note"><TerminalSquare />X post IDs are parsed locally first. Retrieval, canonical checks, job processing, RPC confirmation, and reply publishing require configured server credentials.</p><label className="muted" htmlFor="x-url">Source X post URL</label><div className="form-row mint-url-row"><input className="field-input" id="x-url" value={value} placeholder="https://x.com/name/status/…" aria-invalid={Boolean(statusMessage && !parsed)} onChange={(event) => onChange(event.target.value)} /><button className="pixel-button" type="button" onClick={onPaste}><Copy /> Paste</button><button className="pixel-button" type="button" onClick={onClear} disabled={!value}><XCircle /> Clear</button><button className="pixel-button warning" type="button" onClick={onCheck} disabled={status === 'loading'}><Search /> {status === 'loading' ? 'Checking…' : 'Check'}</button></div>{status === 'loading' && <div className="status-row"><RefreshCw />Retrieving the post from the configured X API…</div>}{parsed && <div className="status-row success"><Bell />Source ID <code>{source.postId}</code> parsed locally. <a className="wallet-link" href={source.canonicalUrl} target="_blank" rel="noreferrer">View original post</a></div>}{statusMessage && !['loading', 'ready'].includes(status) && <div className={`status-row ${['invalid-url', 'unsupported-domain', 'missing-post-id'].includes(status) ? 'error' : 'warning'}`}><XCircle />{statusMessage}</div>}{duplicate && <div className="status-row warning"><Bell />A canonical TweetMint token is already associated with this source post.</div>}{preview && <article className="post-preview"><p className="muted">X POST PREVIEW</p>{author && <strong>{author}</strong>}{content && <p>{content}</p>}{previewData?.createdAt && <time>{formatCompactDate(previewData.createdAt)}</time>}</article>}{['deleted-post', 'private', 'rate-limit', 'auth-failure', 'network-failure', 'api-unavailable', 'unavailable'].includes(status) && <button className="pixel-button" type="button" onClick={onCheck}><RefreshCw /> Retry lookup</button>}<div className="steps"><div className={`step ${parsed ? 'active' : ''}`}>1 · Local URL parsing</div><div className={`step ${status === 'loading' || status === 'ready' ? 'active' : ''}`}>2 · Authorized X content lookup</div><div className="step blocked">3 · Canonical token constraint</div><div className="step blocked">4 · Confirmed Solana deployment</div></div><button className="pixel-button" type="button" disabled title="Requires configured server-side integrations"><Coins /> Launch unavailable</button></div></PixelWindow></div>;
+  return <div className="floating-window mint-window"><PixelWindow eyebrow="MINT STATION" title="Canonical launch control" onClose={onClose}><div className="mint-panel"><div className="mint-machine-art"><div className="mint-machine-screen">MINT OFFLINE<small>CONFIGURE SERVER TO ARM</small></div></div><p className="panel-note"><TerminalSquare />X post IDs are parsed locally first. Retrieval, canonical checks, job processing, RPC confirmation, and reply publishing require configured server credentials.</p><label className="muted" htmlFor="x-url">Source X post URL</label><div className="form-row mint-url-row"><input className="field-input" id="x-url" value={value} placeholder="https://x.com/name/status/…" aria-invalid={Boolean(statusMessage && !parsed)} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); onCheck(); } }} /><button className="pixel-button" type="button" onClick={onPaste}><Copy /> Paste</button><button className="pixel-button" type="button" onClick={onClear} disabled={!value}><XCircle /> Clear</button><button className="pixel-button warning" type="button" onClick={onCheck} disabled={status === 'loading'}><Search /> {status === 'loading' ? 'Checking…' : 'Check'}</button></div>{status === 'loading' && <div className="status-row"><RefreshCw />Retrieving the post from the configured X API…</div>}{parsed && <div className="status-row success"><Bell />Source ID <code>{source.postId}</code> parsed locally. <a className="wallet-link" href={source.canonicalUrl} target="_blank" rel="noreferrer">View original post</a></div>}{statusMessage && !['loading', 'ready'].includes(status) && <div className={`status-row ${['invalid-url', 'unsupported-domain', 'missing-post-id'].includes(status) ? 'error' : 'warning'}`}><XCircle />{statusMessage}</div>}{duplicate && <div className="status-row warning"><Bell />A canonical TweetMint token is already associated with this source post.</div>}{preview && <article className="post-preview"><p className="muted">X POST PREVIEW</p>{author && <strong>{author}</strong>}{content && <p>{content}</p>}{previewData?.createdAt && <time>{formatCompactDate(previewData.createdAt)}</time>}</article>}{['deleted-post', 'private', 'rate-limit', 'auth-failure', 'network-failure', 'api-unavailable', 'unavailable'].includes(status) && <button className="pixel-button" type="button" onClick={onCheck}><RefreshCw /> Retry lookup</button>}<div className="steps"><div className={`step ${parsed ? 'active' : ''}`}>1 · Local URL parsing</div><div className={`step ${status === 'loading' || status === 'ready' ? 'active' : ''}`}>2 · Authorized X content lookup</div><div className="step blocked">3 · Canonical token constraint</div><div className="step blocked">4 · Confirmed Solana deployment</div></div><button className="pixel-button" type="button" disabled title="Requires configured server-side integrations"><Coins /> Launch unavailable</button></div></PixelWindow></div>;
 }
 
 function TokensWindow({ tokens, posts, onOpen, onClose }) {
-  return <div className="floating-window tokens-window"><PixelWindow eyebrow="COIN GARDEN" title="Token concepts" onClose={onClose}><p className="panel-note"><Coins />These token concepts are not minted, tradeable, priced, or connected to a wallet.</p><div className="token-list">{tokens.map((token) => { const post = posts.find((item) => item.id === token.sourcePostId); return <button type="button" className="token-row" key={token.id} onClick={() => post && onOpen(post)}><span className="token-symbol">${token.ticker.slice(0, 3)}</span><span className="token-info"><strong>{token.name}</strong><span>Original post · {post?.content.slice(0, 40)}</span></span><span className="token-state">NOT DEPLOYED<small>market data unavailable</small></span></button>; })}</div></PixelWindow></div>;
+  return <div className="floating-window tokens-window"><PixelWindow eyebrow="COIN GARDEN" title="Token concepts" onClose={onClose}><p className="panel-note"><Coins />Only confirmed Solana deployments receive a live status or market link.</p><div className="token-list">{tokens.map((token) => { const post = posts.find((item) => item.id === token.sourcePostId); const confirmed = Boolean(token.verifiedOnChain && token.mintAddress); return <div className="token-entry" key={token.id}><button type="button" className="token-row" onClick={() => post && onOpen(post)}><span className="token-symbol">${token.ticker.slice(0, 3)}</span><span className="token-info"><strong>{token.name}</strong><span>Original post · {post?.content.slice(0, 40)}</span></span><span className="token-state">{confirmed ? 'DEPLOYED' : 'NOT DEPLOYED'}<small>{confirmed ? `${token.mintAddress.slice(0, 6)}…${token.mintAddress.slice(-4)}` : 'market data unavailable'}</small></span></button>{confirmed && <a className="token-explorer-link" href={`https://explorer.solana.com/address/${encodeURIComponent(token.mintAddress)}`} target="_blank" rel="noreferrer">View on Solana Explorer</a>}</div>; })}</div></PixelWindow></div>;
 }
 
-function WalletWindow({ wallet, onConnect, onDisconnect, onClose }) {
-  if (wallet) return <div className="floating-window profile-window"><PixelWindow eyebrow="WALLET" title={wallet.provider} onClose={onClose}><div className="window-body"><p className="panel-note"><Wallet />Connected through this browser. No private key, seed phrase, balance, or transaction is requested or displayed.</p><p className="muted">PUBLIC ADDRESS</p><a className="wallet-address wallet-link" href={`https://explorer.solana.com/address/${encodeURIComponent(wallet.address)}`} target="_blank" rel="noreferrer">{wallet.address}</a><p className="muted">SOL BALANCE · UNAVAILABLE (NO RPC CONFIGURED)</p><div className="window-actions"><button className="pixel-button" type="button" onClick={() => navigator.clipboard?.writeText(wallet.address)}> <Copy /> Copy address</button><button className="pixel-button warning" type="button" onClick={onDisconnect}>Disconnect</button></div></div></PixelWindow></div>;
-  return <div className="floating-window profile-window"><PixelWindow eyebrow="WALLET SELECT" title="Connect your wallet" onClose={onClose}><div className="wallet-grid"><button className="wallet-choice" type="button" onClick={() => onConnect('Phantom')}><span className="wallet-icon">P</span>Phantom</button><button className="wallet-choice" type="button" onClick={() => onConnect('Solflare')}><span className="wallet-icon">S</span>Solflare</button></div><p className="wallet-footnote">Only Phantom and Solflare are offered. Connection is requested through the provider extension; this browser does not initiate trades or sign transactions. <a className="wallet-link" href="https://solana.com" target="_blank" rel="noreferrer">Solana</a> · <a className="wallet-link" href="https://solflare.com" target="_blank" rel="noreferrer">Solflare</a></p></PixelWindow></div>;
+function WalletWindow({ wallet, walletState, onConnect, onDisconnect, onRefresh, onCopy, onClose }) {
+  useEffect(() => {
+    const onKeyDown = (event) => { if (event.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onClose]);
+
+  if (wallet) {
+    const balance = walletState.balanceStatus === 'loading'
+      ? 'FETCHING…'
+      : walletState.balanceStatus === 'ready' && Number.isFinite(walletState.solBalance)
+        ? `${walletState.solBalance.toFixed(4)} SOL`
+        : 'UNAVAILABLE';
+    return <div className="wallet-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="floating-window wallet-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><PixelWindow eyebrow="WALLET ACCOUNT" title={wallet.provider} onClose={onClose}><div className="window-body"><p className="panel-note"><Wallet />Connected through the official browser extension. TweetMint never requests private keys, seed phrases, or automatic signatures.</p><div className="wallet-account-status"><span className="wallet-connected-dot" aria-hidden="true" /> CONNECTION · CONNECTED</div><p className="muted">NETWORK · {networkLabel(walletState.network)}</p><p className="muted">PUBLIC ADDRESS</p><a className="wallet-address-full wallet-link" href={getExplorerUrl(wallet.address, walletState.network)} target="_blank" rel="noreferrer">{wallet.address}</a><a className="token-explorer-link" href={getExplorerUrl(wallet.address, walletState.network)} target="_blank" rel="noreferrer">View on Solana Explorer</a><div className="wallet-balance"><span>SOL BALANCE</span><strong>{balance}</strong></div>{walletState.balanceError && <p className="wallet-error">{walletState.balanceError}</p>}<div className="wallet-tokens"><p className="muted">SPL TOKENS</p>{walletState.splTokenStatus === 'loading' ? <span className="wallet-empty">Reading verified holdings…</span> : walletState.splTokenStatus === 'error' ? <span className="wallet-empty">{walletState.splTokenError}</span> : walletState.splTokens.length ? walletState.splTokens.slice(0, 8).map((token) => <div className="wallet-token-row" key={`${token.mint}-${token.amount}`}><span>{token.mint.slice(0, 6)}…{token.mint.slice(-4)}</span><strong>{token.uiAmount}</strong></div>) : <span className="wallet-empty">No verified token holdings returned.</span>}</div><div className="window-actions"><button className="pixel-button" type="button" onClick={() => onCopy(wallet.address)}><Copy /> Copy address</button><button className="pixel-button" type="button" onClick={onRefresh} disabled={walletState.balanceStatus === 'loading'}><RefreshCw /> Refresh balance</button><button className="pixel-button warning" type="button" onClick={onDisconnect} disabled={walletState.disconnecting}>{walletState.disconnecting ? 'Disconnecting…' : 'Disconnect'}</button></div></div></PixelWindow></div></div>;
+  }
+
+  const options = walletState.walletOptions.length ? walletState.walletOptions : WALLET_PROVIDERS.map((provider) => ({ ...provider, installed: false }));
+  const mobileBrowser = typeof navigator !== 'undefined' && /android|iphone|ipad|mobile/i.test(navigator.userAgent);
+  return <div className="wallet-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="floating-window wallet-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><PixelWindow eyebrow="WALLET STATION" title="CONNECT YOUR WALLET" onClose={onClose}><div className="wallet-modal-body"><p className="wallet-modal-subtitle">Connect to the Solana world.</p>{mobileBrowser && <p className="wallet-footnote wallet-mobile-note">Browser extensions connect on supported desktop browsers. Install or open TweetMint on desktop to continue.</p>}<div className="wallet-grid">{options.map((option) => { const connecting = walletState.status === 'connecting' && walletState.selectedProvider === option.id; const icon = typeof option.icon === 'string' ? option.icon : null; return <div className="wallet-option" key={option.id}><button className="wallet-choice" type="button" onClick={() => onConnect(option.id)} disabled={!option.installed || walletState.status === 'connecting'} aria-label={`Connect ${option.name}`}><span className="wallet-icon">{icon ? <img src={icon} alt="" /> : option.name[0]}</span><span>{option.name.toUpperCase()}</span><small className={option.installed ? 'wallet-installed' : ''}>{connecting ? 'CONNECTING…' : option.installed ? 'AVAILABLE' : 'NOT INSTALLED'}</small></button>{!option.installed && <a className="wallet-install-link" href={option.installUrl} target="_blank" rel="noreferrer">Install {option.name}</a>}</div>; })}</div>{walletState.status === 'error' && walletState.connectionError && <p className="wallet-error" role="alert">{walletState.connectionError}</p>}<p className="wallet-footnote">Only Phantom and Solflare are offered. Authorization happens in the selected official extension; no transaction is signed during connection. <a className="wallet-link" href="https://solana.com" target="_blank" rel="noreferrer">Solana</a> · <a className="wallet-link" href="https://phantom.com/download" target="_blank" rel="noreferrer">Phantom</a> · <a className="wallet-link" href="https://solflare.com/" target="_blank" rel="noreferrer">Solflare</a></p></div></PixelWindow></div></div>;
 }
