@@ -135,6 +135,7 @@ export const getCommunityStats = (state, now = new Date()) => {
     totalCoinsMinted: confirmedTokens.length,
     coinsMintedToday: confirmedTokens.filter((token) => isSameDay(token.confirmedAt || token.deployedAt || token.createdAt, day)).length,
   };
+};
 
 export const getPostById = (state, postId) => state.posts.find((post) => post.id === postId) || null;
 
