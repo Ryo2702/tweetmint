@@ -7,6 +7,7 @@ import {
   deletePost,
   editComment,
   editPost,
+  getCommunityStats,
   getPostById,
   getTrendingPosts,
   reactionTotal,
@@ -30,6 +31,19 @@ describe('fictional community seed', () => {
 });
 
 describe('local social state helpers', () => {
+  it('derives persisted community statistics without counting unconfirmed coins', () => {
+    const state = createInitialSocialState();
+    const stats = getCommunityStats({
+      ...state,
+      tokens: [...state.tokens, { id: 'confirmed', verifiedOnChain: true, confirmedAt: '2026-10-12T04:00:00.000Z' }],
+      posts: [...state.posts, { id: 'today', createdAt: '2026-10-12T05:00:00.000Z' }],
+    }, new Date('2026-10-12T12:00:00.000Z'));
+
+    expect(stats.postsToday).toBe(1);
+    expect(stats.totalCoinsMinted).toBe(1);
+    expect(stats.coinsMintedToday).toBe(1);
+  });
+
   it('records profile visits for plaza members', () => {
     const state = createInitialSocialState();
     const characterId = state.characters[0].id;

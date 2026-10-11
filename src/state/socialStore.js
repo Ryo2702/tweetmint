@@ -114,6 +114,28 @@ export const reactionTotal = (post) =>
 export const engagementScore = (post) =>
   reactionTotal(post) + (post?.commentCount || 0) * 2 + (post?.shareCount || 0) * 3;
 
+const isSameDay = (value, day) => {
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === day;
+};
+
+const isConfirmedToken = (token) => Boolean(
+  token?.verifiedOnChain || token?.deployment?.confirmed || token?.confirmedAt || token?.status === 'deployed',
+);
+
+export const getCommunityStats = (state, now = new Date()) => {
+  const day = new Date(now).toISOString().slice(0, 10);
+  const confirmedTokens = (state.tokens || []).filter(isConfirmedToken);
+  return {
+    totalPosts: state.posts?.length || 0,
+    postsToday: (state.posts || []).filter((post) => isSameDay(post.createdAt, day)).length,
+    totalComments: state.comments?.length || 0,
+    totalReactions: state.reactions?.length || 0,
+    totalShares: state.shares?.length || 0,
+    totalCoinsMinted: confirmedTokens.length,
+    coinsMintedToday: confirmedTokens.filter((token) => isSameDay(token.confirmedAt || token.deployedAt || token.createdAt, day)).length,
+  };
+
 export const getPostById = (state, postId) => state.posts.find((post) => post.id === postId) || null;
 
 export const getCommentsForPost = (state, postId) =>

@@ -31,6 +31,7 @@ import {
   createInitialSocialState,
   createPost,
   getCommentsForPost,
+  getCommunityStats,
   getPostById,
   getTrendingPosts,
   reactionTotal,
@@ -156,6 +157,7 @@ export default function App() {
   const selectedPost = selectedPostId ? getPostById(social, selectedPostId) : null;
   const selectedCharacter = selectedCharacterId ? characterById.get(selectedCharacterId) : null;
   const visiblePosts = useMemo(() => getTrendingPosts(social, filter).slice(0, 12), [social, filter]);
+  const communityStats = useMemo(() => getCommunityStats(social), [social]);
   const sceneCharacters = useMemo(() => characters.map((character, index) => {
     const point = plazaPositions[index % plazaPositions.length];
     return { ...character, x: point[0], y: point[1] };
@@ -336,6 +338,9 @@ export default function App() {
             <h1>EVERY POST IS A <span>COIN.</span></h1>
           </div>
 
+          <StatsBoard stats={communityStats} />
+          <AnnouncementStack announcements={social.announcements || []} onOpen={showPost} onHistory={() => openPanel('announcements')} />
+
           <aside className="activity-board" aria-label="Recent community activity">
             <header><span>✦ PLAZA PULSE</span><span>LOCAL</span></header>
             <div className="activity-list">
@@ -366,6 +371,7 @@ export default function App() {
                 {panel === 'profile' && selectedCharacter && <ProfileWindow character={selectedCharacter} posts={social.posts} getAuthor={actorFor} onOpen={showPost} onClose={closePanel} />}
                 {panel === 'mint' && <MintWindow value={mintUrl} onChange={updateMintUrl} status={mintStatus} statusMessage={mintStatusMessages[mintStatus]} source={mintSource} preview={mintPreview} duplicate={duplicateToken} onPaste={pasteMintUrl} onClear={() => updateMintUrl('')} onCheck={checkMintUrl} onClose={closePanel} />}
                 {panel === 'tokens' && <TokensWindow tokens={social.tokens} posts={social.posts} onOpen={showPost} onClose={closePanel} />}
+                {panel === 'announcements' && <AnnouncementsWindow announcements={social.announcementHistory || []} onOpen={showPost} onClose={closePanel} />}
                 {panel === 'wallet' && <WalletWindow wallet={wallet} onConnect={connectWallet} onDisconnect={() => { setWallet(null); notify('Wallet disconnected from this browser.'); }} onClose={closePanel} />}
               </motion.div>
             )}
