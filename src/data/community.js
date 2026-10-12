@@ -888,7 +888,45 @@ export const fictionalTokens = [
     marketDataStatus: 'unavailable',
     disclaimer: 'Fictional local concept. Not deployed, tradeable, or a representation of blockchain activity.',
   },
+  {
+    id: 'fictional-token-frame',
+    name: 'Frame Coin Concept',
+    ticker: 'FRAME',
+    sourcePostId: 'fictional-post-009',
+    status: 'fictional-concept',
+    verifiedOnChain: false,
+    freeDemo: true,
+    marketDataStatus: 'unavailable',
+    disclaimer: 'Fictional local concept. Not deployed, tradeable, or a representation of blockchain activity.',
+  },
+  {
+    id: 'fictional-token-glow',
+    name: 'Glow Coin Concept',
+    ticker: 'GLOW',
+    sourcePostId: 'fictional-post-033',
+    status: 'fictional-concept',
+    verifiedOnChain: false,
+    freeDemo: true,
+    marketDataStatus: 'unavailable',
+    disclaimer: 'Fictional local concept. Not deployed, tradeable, or a representation of blockchain activity.',
+  },
+  {
+    id: 'fictional-token-byte',
+    name: 'Byte Coin Concept',
+    ticker: 'BYTE',
+    sourcePostId: 'fictional-post-057',
+    status: 'fictional-concept',
+    verifiedOnChain: false,
+    freeDemo: true,
+    marketDataStatus: 'unavailable',
+    disclaimer: 'Fictional local concept. Not deployed, tradeable, or a representation of blockchain activity.',
+  },
 ];
+
+fictionalTokens.forEach((token) => {
+  const post = fictionalPosts.find((item) => item.id === token.sourcePostId);
+  if (post && !post.relatedTokenId) post.relatedTokenId = token.id;
+});
 
 fictionalPosts.forEach((post) => {
   post.token = fictionalTokens.find((token) => token.id === post.relatedTokenId) || null;
@@ -926,6 +964,7 @@ export const createInitialSocialState = () => ({
   reactions: clone(fictionalReactions),
   shares: clone(fictionalShares),
   tokens: clone(fictionalTokens),
+  sourcePosts: [],
   activity: clone(fictionalActivity),
   announcements: [],
   announcementHistory: [],
@@ -936,6 +975,7 @@ export const createInitialSocialState = () => ({
     share: fictionalShares.length + 1,
     activity: fictionalActivity.length + 1,
     announcement: 1,
+    sourcePost: 1,
   },
   localClock: 0,
 });

@@ -10,12 +10,14 @@ import {
   editPost,
   getCommunityStats,
   getPostById,
+  getSourcePostRecord,
   getTrendingPosts,
   reactionTotal,
   recordProfileVisit,
   runAutonomousActivity,
   sharePost,
   toggleReaction,
+  upsertSourcePostRecord,
 } from './socialStore.js';
 
 describe('fictional community seed', () => {
@@ -31,6 +33,9 @@ describe('fictional community seed', () => {
     expect(state.posts).toHaveLength(60);
     expect(state.comments.length).toBeGreaterThanOrEqual(100);
     expect(state.posts.every((post) => post.isFictional)).toBe(true);
+    expect(state.tokens).toHaveLength(8);
+    expect(state.tokens.filter((token) => token.freeDemo)).toHaveLength(3);
+    expect(['fictional-post-009', 'fictional-post-033', 'fictional-post-057'].map((id) => state.posts.find((post) => post.id === id)).every((post) => post.relatedTokenId && post.commentCount > 0 && reactionTotal(post) > 0 && post.shareCount > 0)).toBe(true);
   });
 });
 
@@ -59,6 +64,47 @@ describe('local social state helpers', () => {
     expect(next.announcements[0]).toMatchObject({ type: 'coin-launch', tokenId: 'solana-chair' });
   });
 
+  it('keeps one canonical coin for a source post and retains its screenshot record', () => {
+    const sourcePostId = '123456789';
+    const source = {
+      sourcePostId,
+      sourcePostUrl: `https://x.com/mika/status/${sourcePostId}`,
+      screenshotAssetId: `x-post-${sourcePostId}-screenshot`,
+      screenshotStatus: 'ready',
+      screenshotThumbUrl: 'data:image/svg+xml,thumb'
+    };
+    const withSource = upsertSourcePostRecord(createInitialSocialState(), source);
+    const launched = confirmTokenLaunch(withSource, {
+      token: { id: 'coin-one', ticker: 'ONE', mintAddress: 'MintOne', sourcePostId, launchPlatform: 'pump.fun' },
+      confirmedAt: '2026-10-12T04:00:00.000Z'
+    });
+    const repeated = confirmTokenLaunch(launched, {
+      token: { id: 'coin-two', ticker: 'TWO', mintAddress: 'MintTwo', sourcePostId, launchPlatform: 'pump.fun' },
+      confirmedAt: '2026-10-12T04:00:00.000Z'
+    });
+
+    expect(launched.tokens.filter((token) => token.sourcePostId === sourcePostId)).toHaveLength(1);
+    expect(getSourcePostRecord(launched, sourcePostId)).toMatchObject({ tokenTicker: 'ONE', tokenMintAddress: 'MintOne', launchStatus: 'launched', screenshotAssetId: source.screenshotAssetId });
+    expect(repeated).toBe(launched);
+  });
+
+  it('accepts a local image upload as one canonical source', () => {
+    const sourcePostId = 'upload-1';
+    const withSource = upsertSourcePostRecord(createInitialSocialState(), {
+      sourcePostId,
+      sourceType: 'local-upload',
+      screenshotStatus: 'ready',
+      sourcePostText: 'Uploaded caption'
+    });
+    const launched = confirmTokenLaunch(withSource, {
+      token: { id: 'uploaded-coin', ticker: 'UPLD', mintAddress: 'MintUploaded', sourcePostId },
+      confirmedAt: '2026-10-12T04:00:00.000Z'
+    });
+
+    expect(launched.tokens.filter((token) => token.sourcePostId === sourcePostId)).toHaveLength(1);
+    expect(getSourcePostRecord(launched, sourcePostId)).toMatchObject({ sourceType: 'local-upload', launchStatus: 'launched' });
+  });
+
   it('queues a milestone only when the verified coin total reaches it', () => {
     let state = createInitialSocialState();
     for (let index = 0; index < 10; index += 1) {
@@ -79,6 +125,17 @@ describe('local social state helpers', () => {
     expect(next.posts).toHaveLength(state.posts.length + 1);
     expect(next.posts[0].isFictional).toBe(true);
     expect(next.announcements[0]).toMatchObject({ type: 'new-post', postId: next.posts[0].id });
+  });
+
+  it('keeps reactions, comments, and shares moving for autonomous characters', () => {
+    const state = createInitialSocialState();
+    const reacted = runAutonomousActivity(state, () => 0, 'react');
+    const commented = runAutonomousActivity(reacted, () => 0, 'comment');
+    const shared = runAutonomousActivity(commented, () => 0, 'share');
+
+    expect(reacted.reactions.length).toBeGreaterThan(state.reactions.length);
+    expect(commented.comments.length).toBeGreaterThan(reacted.comments.length);
+    expect(shared.shares.length).toBeGreaterThan(commented.shares.length);
   });
 
   it('announces a conversation milestone from the post owner', () => {

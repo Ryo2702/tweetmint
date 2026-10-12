@@ -8,7 +8,7 @@ const PUBLIC_RPC_URLS = {
 };
 // shortcut: the public RPC can rate-limit, set VITE_SOLANA_RPC_URL for production traffic.
 export const SOLANA_RPC_URL = String(env.VITE_SOLANA_RPC_URL || PUBLIC_RPC_URLS[SOLANA_NETWORK] || PUBLIC_RPC_URLS['mainnet-beta']);
-const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+export const TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 
 export function normalizeNetwork(value = SOLANA_NETWORK) {
   const network = String(value || '').toLowerCase();
@@ -77,4 +77,19 @@ export async function fetchSplTokenBalances(address, options = {}) {
       uiAmount: Number(amount?.uiAmount ?? amount?.uiAmountString ?? 0)
     };
   }).filter((token) => token.mint && token.amount !== '0');
+}
+
+export async function verifySolanaMint(address, options = {}) {
+  const mintAddress = String(address || '').trim();
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mintAddress)) {
+    throw new Error('Enter a valid Solana mint address.');
+  }
+  const result = await rpcRequest('getAccountInfo', [mintAddress, { encoding: 'jsonParsed', commitment: 'confirmed' }], options);
+  const account = result?.value;
+  if (!account) return { confirmed: false, reason: 'missing-account', mintAddress };
+  const owner = String(account.owner || '');
+  if (owner !== TOKEN_PROGRAM_ID) {
+    return { confirmed: false, reason: 'not-token-mint', mintAddress, owner };
+  }
+  return { confirmed: true, mintAddress, owner };
 }

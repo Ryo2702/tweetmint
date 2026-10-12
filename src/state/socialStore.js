@@ -57,6 +57,22 @@ const nextIds = (state, kind) => ({
 const getActor = (state, actorId) =>
   [...(state.characters || []), state.currentUser].find((character) => character?.id === actorId);
 
+export const getSourcePostRecord = (state, sourcePostId) =>
+  (state.sourcePosts || []).find((record) => String(record.sourcePostId) === String(sourcePostId)) || null;
+
+export const upsertSourcePostRecord = (state, record) => {
+  const sourcePostId = String(record?.sourcePostId || '');
+  if (!/^[A-Za-z0-9_-]+$/.test(sourcePostId)) return state;
+  const current = getSourcePostRecord(state, sourcePostId);
+  const nextRecord = { ...(current || {}), ...record, sourcePostId };
+  return {
+    ...state,
+    sourcePosts: current
+      ? state.sourcePosts.map((item) => (String(item.sourcePostId) === sourcePostId ? nextRecord : item))
+      : [...(state.sourcePosts || []), nextRecord],
+  };
+};
+
 const announcementFor = (state, activity) => {
   const actor = getActor(state, activity.actorId);
   const post = activity.postId ? getPostById(state, activity.postId) : null;
@@ -68,11 +84,14 @@ const announcementFor = (state, activity) => {
         key: activity.id,
         text: activity.type === 'creator-claimed'
           ? `Creator verified for $${token.ticker}!`
-          : `NEW COIN MINTED: $${token.ticker}${token.name ? ` · ${token.name}` : ''}`,
+          : `NEW COIN LAUNCHED: $${token.ticker} is now live on ${token.launchPlatform || 'pump.fun'}`,
         tokenId: token.id,
         sourcePostId: token.sourcePostId,
         mintAddress: token.mintAddress,
         explorerUrl: token.mintAddress ? `https://explorer.solana.com/address/${encodeURIComponent(token.mintAddress)}` : null,
+        screenshotAssetId: getSourcePostRecord(state, token.sourcePostId)?.screenshotAssetId || token.screenshotAssetId || null,
+        screenshotThumbUrl: getSourcePostRecord(state, token.sourcePostId)?.screenshotThumbUrl || token.screenshotThumbUrl || null,
+        launchPlatform: token.launchPlatform || 'pump.fun',
       };
     }
   }
@@ -316,7 +335,8 @@ export const runAutonomousActivity = (state, random = Math.random, requestedActi
   }
 
   if (action === 'share') {
-    const post = randomItem(state.posts, random);
+    const candidates = state.posts.filter((post) => !state.shares.some((share) => share.postId === post.id && share.actorId === actor.id));
+    const post = randomItem(candidates.length ? candidates : state.posts, random);
     return post ? sharePost(state, { postId: post.id, actorId: actor.id }) : state;
   }
 
@@ -335,11 +355,38 @@ export const runAutonomousActivity = (state, random = Math.random, requestedActi
 
 export const confirmTokenLaunch = (state, input = {}) => {
   const token = input.token;
-  if (!token?.id || !token.ticker || !token.mintAddress || state.tokens.some((item) => item.id === token.id)) return state;
+  const sourcePostId = token?.sourcePostId ? String(token.sourcePostId) : '';
+  if (!token?.id || !token.ticker || !token.mintAddress || (sourcePostId && !/^[A-Za-z0-9_-]+$/.test(sourcePostId)) || state.tokens.some((item) => item.id === token.id || (sourcePostId && String(item.sourcePostId) === sourcePostId))) return state;
   const confirmedAt = input.confirmedAt || new Date().toISOString();
+  const sourcePost = getSourcePostRecord(state, sourcePostId);
+  const sourcePosts = sourcePost
+    ? state.sourcePosts.map((record) => String(record.sourcePostId) === sourcePostId
+      ? {
+        ...record,
+        launchTimestamp: confirmedAt,
+        tokenTicker: token.ticker,
+        tokenMintAddress: token.mintAddress,
+        launchPlatform: token.launchPlatform || 'pump.fun',
+        launchStatus: 'launched',
+        network: token.network || 'mainnet-beta',
+        creatorWallet: token.creatorWallet || null,
+        pumpFunUrl: token.pumpFunUrl || null,
+      }
+      : record)
+    : state.sourcePosts || [];
   const nextState = {
     ...state,
-    tokens: [...state.tokens, { ...token, status: 'deployed', verifiedOnChain: true, confirmedAt }],
+    sourcePosts,
+    tokens: [...state.tokens, {
+      ...token,
+      sourcePostId,
+      status: 'deployed',
+      verifiedOnChain: true,
+      confirmedAt,
+      launchPlatform: token.launchPlatform || 'pump.fun',
+      launchStatus: 'launched',
+      screenshotAssetId: token.screenshotAssetId || sourcePost?.screenshotAssetId || null,
+    }],
   };
   const withLaunch = appendActivity(nextState, {
     id: nextId(state, 'activity', 'local-activity'),

@@ -1,18 +1,23 @@
 import { AnimatePresence, motion } from 'motion/react';
 import {
-  Bell,
   Coins,
   Copy,
+  Download,
   Feather,
   Flame,
   Gamepad2,
+  HelpCircle,
+  ExternalLink,
+  Eye,
   MessageCircle,
   Plus,
   RefreshCw,
   Search,
   Send,
+  ShieldCheck,
   Sparkles,
   TerminalSquare,
+  Upload,
   UserRound,
   Wallet,
   XCircle
@@ -21,18 +26,23 @@ import { useEffect, useMemo, useState } from 'react';
 import PixelWindow from './components/PixelWindow.jsx';
 import Avatar from './components/Avatar.jsx';
 import PostCard from './components/PostCard.jsx';
+import PostScreenshot from './components/PostScreenshot.jsx';
 import PlazaScene from './world/PlazaScene.jsx';
 import { usePlazaUi } from './state/uiStore.js';
 import { useWalletStore } from './state/walletStore.js';
 import { parseXPostUrl } from './state/xUrl.js';
 import { WALLET_PROVIDERS, subscribeWalletDiscovery, walletDisplayName } from './services/walletService.js';
-import { getExplorerUrl, networkLabel } from './services/solanaRpc.js';
+import { getExplorerUrl, networkLabel, SOLANA_NETWORK, verifySolanaMint } from './services/solanaRpc.js';
+import { buildPumpFunCoinUrl, buildPumpFunLaunchDraft, buildPumpFunLaunchUrl, normalizeTicker } from './services/pumpFun.js';
+import { createPostScreenshotAsset, createScreenshotFailure, createUploadedScreenshotAsset, isScreenshotReady, rasterizeScreenshotAsset } from './services/postScreenshot.js';
 import {
   REACTION_TYPES,
   TRENDING_FILTERS,
   addComment,
+  confirmTokenLaunch,
   createInitialSocialState,
   createPost,
+  getSourcePostRecord,
   getCommentsForPost,
   getCommunityStats,
   getPostById,
@@ -41,7 +51,8 @@ import {
   recordProfileVisit,
   runAutonomousActivity,
   sharePost,
-  toggleReaction
+  toggleReaction,
+  upsertSourcePostRecord
 } from './state/socialStore.js';
 
 const STORAGE_KEY = 'tweetmint.local-social-state.v1';
@@ -59,11 +70,26 @@ const plazaPositions = [
 
 const initialState = () => {
   try {
+    const seeded = createInitialSocialState();
     const stored = window.localStorage.getItem(STORAGE_KEY);
-    const state = stored ? JSON.parse(stored) : createInitialSocialState();
-    return state.currentUser?.displayName === 'Local Demo Visitor'
-      ? { ...state, currentUser: { ...state.currentUser, handle: '@mikapixel', displayName: 'Mika Pixel' } }
-      : state;
+    const state = stored ? JSON.parse(stored) : seeded;
+    const seededTokens = seeded.tokens.filter((token) => !(state.tokens || []).some((item) => item.id === token.id));
+    const seededPosts = new Map(seeded.posts.map((post) => [post.id, post]));
+    const normalized = {
+      ...state,
+      tokens: [...(state.tokens || []), ...seededTokens],
+      posts: (state.posts || []).map((post) => {
+        const seededPost = seededPosts.get(post.id);
+        return post.relatedTokenId || !seededPost?.relatedTokenId
+          ? post
+          : { ...post, relatedTokenId: seededPost.relatedTokenId, token: seededPost.token };
+      }),
+      sourcePosts: Array.isArray(state.sourcePosts) ? state.sourcePosts : [],
+      nextIds: { sourcePost: 1, ...(state.nextIds || {}) }
+    };
+    return normalized.currentUser?.displayName === 'Local Demo Visitor'
+      ? { ...normalized, currentUser: { ...normalized.currentUser, handle: '@mikapixel', displayName: 'Mika Pixel' } }
+      : normalized;
   } catch {
     return createInitialSocialState();
   }
@@ -94,6 +120,25 @@ function formatCompactDate(date) {
   return `${Math.round(minutes / 1440)}d`;
 }
 
+function createLocalPostPreview(source, value) {
+  let username = null;
+  try {
+    const segments = new URL(value).pathname.split('/').filter(Boolean);
+    if (segments[1]?.toLowerCase() === 'status' && segments[0].toLowerCase() !== 'i') username = segments[0];
+  } catch {
+    // The URL parser owns validation; this only enriches the local preview when possible.
+  }
+  return {
+    data: {
+      id: source.postId,
+      text: '',
+      createdAt: null,
+      author: { id: null, name: null, username }
+    },
+    source: 'local-url'
+  };
+}
+
 function shallowState(state) {
   return JSON.stringify(state);
 }
@@ -104,10 +149,17 @@ function readMintLookup() {
     return {
       mintUrl: typeof stored?.mintUrl === 'string' ? stored.mintUrl : '',
       mintSource: stored?.mintSource?.ok && typeof stored.mintSource.postId === 'string' ? stored.mintSource : null,
-      mintPreview: stored?.mintPreview && typeof stored.mintPreview === 'object' ? stored.mintPreview : null
+      mintPreview: stored?.mintPreview && typeof stored.mintPreview === 'object' ? stored.mintPreview : null,
+      screenshotAsset: stored?.screenshotAsset && typeof stored.screenshotAsset === 'object' ? stored.screenshotAsset : null,
+      caption: typeof stored?.caption === 'string' ? stored.caption : typeof stored?.mintPreview?.data?.text === 'string' ? stored.mintPreview.data.text : '',
+      ticker: typeof stored?.ticker === 'string' ? stored.ticker : '',
+      tokenName: typeof stored?.tokenName === 'string' ? stored.tokenName : '',
+      launchStatus: typeof stored?.launchStatus === 'string' ? stored.launchStatus : 'idle',
+      mintAddress: typeof stored?.mintAddress === 'string' ? stored.mintAddress : '',
+      launchDraft: stored?.launchDraft && typeof stored.launchDraft === 'object' ? stored.launchDraft : null
     };
   } catch {
-    return { mintUrl: '', mintSource: null, mintPreview: null };
+    return { mintUrl: '', mintSource: null, mintPreview: null, screenshotAsset: null, caption: '', ticker: '', tokenName: '', launchStatus: 'idle', mintAddress: '', launchDraft: null };
   }
 }
 
@@ -115,15 +167,7 @@ const mintStatusMessages = {
   'invalid-url': 'Enter a complete X post URL.',
   'unsupported-domain': 'Use an x.com or twitter.com post URL.',
   'missing-post-id': 'That link does not contain a numeric X post ID.',
-  unavailable: 'Post ID parsed locally, but no X API backend is configured.',
-  configuration: 'Post ID parsed locally, but X_BEARER_TOKEN is missing from .env. Add it and restart Vite.',
-  'api-unavailable': 'Post ID parsed locally, but the X API response was unavailable.',
-  'network-failure': 'Post ID parsed locally, but the X API could not be reached.',
-  'deleted-post': 'The post ID is valid, but that post is deleted or unavailable.',
-  private: 'The post is private or inaccessible to the configured X account.',
-  'auth-failure': 'The configured X API credentials were rejected.',
-  'credits-depleted': 'X API access is configured, but the account has no remaining credits. Add credits in the X Developer Console.',
-  'rate-limit': 'The X API rate limit was reached. Try again later.'
+  'capture-failed': 'The local screenshot could not be generated. Try again.'
 };
 
 export default function App() {
@@ -134,9 +178,17 @@ export default function App() {
   const [filter, setFilter] = useState('trending');
   const [mintLookup] = useState(readMintLookup);
   const [mintUrl, setMintUrl] = useState(mintLookup.mintUrl);
-  const [mintStatus, setMintStatus] = useState(mintLookup.mintPreview ? 'ready' : 'idle');
+  const [mintStatus, setMintStatus] = useState(mintLookup.mintPreview || mintLookup.screenshotAsset ? 'ready' : 'idle');
   const [mintSource, setMintSource] = useState(mintLookup.mintSource);
   const [mintPreview, setMintPreview] = useState(mintLookup.mintPreview);
+  const [mintScreenshot, setMintScreenshot] = useState(mintLookup.screenshotAsset);
+  const [mintCaption, setMintCaption] = useState(mintLookup.caption);
+  const [mintTicker, setMintTicker] = useState(mintLookup.ticker);
+  const [mintTokenName, setMintTokenName] = useState(mintLookup.tokenName);
+  const [launchStatus, setLaunchStatus] = useState(mintLookup.launchStatus);
+  const [mintAddress, setMintAddress] = useState(mintLookup.mintAddress);
+  const [launchDraft, setLaunchDraft] = useState(mintLookup.launchDraft);
+  const [selectedTokenId, setSelectedTokenId] = useState(null);
   const [toasts, setToasts] = useState([]);
   const [autonomyPaused, setAutonomyPaused] = useState(false);
   const { panel, selectedPostId, selectedCharacterId, openPanel, closePanel } = usePlazaUi();
@@ -159,9 +211,20 @@ export default function App() {
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(MINT_LOOKUP_STORAGE_KEY, shallowState({ mintUrl, mintSource, mintPreview }));
+      window.localStorage.setItem(MINT_LOOKUP_STORAGE_KEY, shallowState({
+        mintUrl,
+        mintSource,
+        mintPreview,
+        screenshotAsset: mintScreenshot,
+        caption: mintCaption,
+        ticker: mintTicker,
+        tokenName: mintTokenName,
+        launchStatus,
+        mintAddress,
+        launchDraft
+      }));
     } catch { /* lookup persistence is best-effort only */ }
-  }, [mintUrl, mintSource, mintPreview]);
+  }, [mintUrl, mintSource, mintPreview, mintScreenshot, mintCaption, mintTicker, mintTokenName, launchStatus, mintAddress, launchDraft]);
 
   useEffect(() => {
     if (autonomyPaused) return undefined;
@@ -176,12 +239,12 @@ export default function App() {
       }, minimum + Math.random() * (maximum - minimum));
       timers.add(timer);
     };
-    schedule('react', 5_000, 20_000);
-    schedule('comment', 12_000, 35_000);
-    schedule('share', 20_000, 60_000);
-    schedule('post', 30_000, 90_000);
-    schedule('visit', 7_000, 24_000);
-    schedule('idle', 8_000, 24_000);
+    schedule('react', 2_000, 7_000);
+    schedule('comment', 4_000, 10_000);
+    schedule('share', 5_000, 12_000);
+    schedule('post', 10_000, 25_000);
+    schedule('visit', 3_000, 9_000);
+    schedule('idle', 4_000, 10_000);
     return () => {
       stopped = true;
       timers.forEach((timer) => window.clearTimeout(timer));
@@ -195,6 +258,9 @@ export default function App() {
   const currentUser = useMemo(() => hydrateCharacter(social.currentUser, characters.length), [social.currentUser, characters.length]);
   const characterById = useMemo(() => new Map([...characters, currentUser].map((character) => [character.id, character])), [characters, currentUser]);
   const selectedPost = selectedPostId ? getPostById(social, selectedPostId) : null;
+  const selectedToken = selectedTokenId ? social.tokens.find((token) => token.id === selectedTokenId) || null : null;
+  const selectedTokenSource = selectedToken ? getSourcePostRecord(social, selectedToken.sourcePostId) : null;
+  const selectedTokenPost = selectedToken ? getPostById(social, selectedToken.sourcePostId) : null;
   const selectedCharacter = selectedCharacterId ? characterById.get(selectedCharacterId) : null;
   const visiblePosts = useMemo(() => getTrendingPosts(social, filter).slice(0, 12), [social, filter]);
   const communityStats = useMemo(() => getCommunityStats(social), [social]);
@@ -224,7 +290,7 @@ export default function App() {
   };
 
   const openZone = (zone) => {
-    const panelForZone = { terminal: 'composer', feed: 'feed', trending: 'trending', mint: 'mint', trading: 'tokens', lounge: 'community', wallet: 'wallet' };
+    const panelForZone = { terminal: 'composer', feed: 'feed', trending: 'trending', mint: 'mint', trading: 'tokens', archive: 'archive', lounge: 'community', wallet: 'wallet' };
     openPanel(panelForZone[zone] || 'feed');
   };
 
@@ -275,56 +341,291 @@ export default function App() {
     setMintStatus('idle');
     setMintSource(null);
     setMintPreview(null);
+    setMintScreenshot(null);
+    setMintCaption('');
+    setMintTicker('');
+    setMintTokenName('');
+    setLaunchStatus('idle');
+    setMintAddress('');
+    setLaunchDraft(null);
   };
 
-  const pasteMintUrl = async () => {
-    try {
-      updateMintUrl(await navigator.clipboard.readText());
-    } catch {
-      notify('Clipboard access was not available.', 'error');
+  const updateMintCaption = (value) => {
+    setMintCaption(value);
+    const nextPreview = mintPreview ? { ...mintPreview, data: { ...(mintPreview.data || {}), text: value } } : null;
+    const nextScreenshot = mintScreenshot ? { ...mintScreenshot, sourcePostText: value } : null;
+    setMintPreview(nextPreview);
+    setMintScreenshot(nextScreenshot);
+    if (mintSource && nextScreenshot) {
+      setSocial((state) => upsertSourcePostRecord(state, {
+        ...nextScreenshot,
+        sourcePostId: mintSource.postId,
+        sourcePostUrl: mintSource.canonicalUrl || null,
+        preview: nextPreview
+      }));
     }
   };
 
-  const checkMintUrl = async () => {
-    const parsed = parseXPostUrl(mintUrl);
+  const uploadMintImage = (file) => {
+    if (!file) return;
+    if (!String(file.type || '').startsWith('image/')) return notify('Choose an image file.', 'error');
+    const source = mintSource?.sourceType === 'local-upload'
+      ? mintSource
+      : { ok: true, postId: `upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, canonicalUrl: null, sourceType: 'local-upload' };
+    const reader = new FileReader();
+    reader.onload = () => {
+      const imageUrl = String(reader.result || '');
+      if (!imageUrl) return notify('The image could not be read.', 'error');
+      const preview = { data: { id: source.postId, text: mintCaption, createdAt: null, author: null }, source: 'local-upload' };
+      const screenshot = createUploadedScreenshotAsset({ source, imageUrl, caption: mintCaption, mimeType: file.type });
+      setMintUrl('');
+      setMintSource(source);
+      setMintPreview(preview);
+      setMintScreenshot(screenshot);
+      setMintStatus('ready');
+      setLaunchDraft(null);
+      setMintAddress('');
+      setLaunchStatus('screenshot ready');
+      setSocial((state) => upsertSourcePostRecord(state, {
+        ...screenshot,
+        sourcePostId: source.postId,
+        sourcePostUrl: null,
+        sourceType: 'local-upload',
+        preview,
+        launchStatus: 'screenshot ready',
+        tokenTicker: ''
+      }));
+      notify('Image uploaded and ready for a caption.');
+    };
+    reader.onerror = () => notify('The image could not be read.', 'error');
+    reader.readAsDataURL(file);
+  };
+
+  const checkMintUrl = async (value = mintUrl) => {
+    const inputUrl = value;
+    const parsed = parseXPostUrl(inputUrl);
     if (!parsed.ok) {
       setMintStatus(parsed.reason);
       setMintSource(null);
       setMintPreview(null);
+      setMintScreenshot(null);
+      setLaunchStatus('idle');
       return;
     }
 
     setMintUrl(parsed.canonicalUrl);
     setMintSource(parsed);
-    setMintPreview(null);
+    setLaunchDraft(null);
+    setMintAddress('');
     setMintStatus('loading');
+    setLaunchStatus('preparing');
 
-    const apiBase = import.meta.env.VITE_X_API_URL || '/api/x';
+    const existingRecord = getSourcePostRecord(social, parsed.postId);
+    const localPreview = existingRecord?.preview || createLocalPostPreview(parsed, inputUrl);
+    setMintPreview(localPreview);
+    setMintScreenshot(isScreenshotReady(existingRecord) ? existingRecord : null);
+    if (isScreenshotReady(existingRecord)) {
+      setMintStatus('ready');
+      setLaunchStatus(existingRecord.launchStatus || 'screenshot ready');
+      return;
+    }
 
     try {
-      const endpoint = `${apiBase.replace(/\/$/, '')}/posts/${encodeURIComponent(parsed.postId)}`;
-      const response = await fetch(endpoint, { headers: { Accept: 'application/json' } });
-      if (!response.ok) {
-        setMintStatus(response.status === 401 ? 'auth-failure' : response.status === 403 ? 'private' : response.status === 404 ? 'deleted-post' : response.status === 402 ? 'credits-depleted' : response.status === 429 ? 'rate-limit' : response.status === 502 ? 'network-failure' : response.status === 503 ? 'configuration' : 'api-unavailable');
-        return;
-      }
-      let payload;
-      try {
-        payload = await response.json();
-      } catch {
-        setMintStatus('api-unavailable');
-        return;
-      }
-      setMintPreview(payload);
+      const screenshot = await rasterizeScreenshotAsset(createPostScreenshotAsset({ source: parsed, preview: localPreview }));
+      setMintScreenshot(screenshot);
       setMintStatus('ready');
-    } catch {
-      setMintStatus('network-failure');
+      setLaunchStatus(existingRecord?.launchStatus || 'screenshot ready');
+      setSocial((state) => upsertSourcePostRecord(state, {
+        ...screenshot,
+        sourcePostUrl: parsed.canonicalUrl,
+        launchStatus: existingRecord?.launchStatus || 'screenshot ready',
+        preview: localPreview,
+        launchTimestamp: existingRecord?.launchTimestamp || null,
+        tokenTicker: existingRecord?.tokenTicker || ''
+      }));
+    } catch (error) {
+      const failure = createScreenshotFailure(parsed, 'failed', error.message || mintStatusMessages['capture-failed']);
+      setMintScreenshot(failure);
+      setMintStatus('capture-failed');
+      setLaunchStatus('failed');
+      setSocial((state) => upsertSourcePostRecord(state, {
+        ...failure,
+        sourcePostUrl: parsed.canonicalUrl,
+        launchStatus: 'failed',
+        preview: localPreview
+      }));
+    }
+  };
+
+  const recaptureScreenshot = async () => {
+    if (!mintSource) return;
+    if (mintSource.sourceType === 'local-upload') return notify('Choose another image to replace this upload.');
+    if (!mintPreview) return checkMintUrl();
+    try {
+      const screenshot = await rasterizeScreenshotAsset(createPostScreenshotAsset({ source: mintSource, preview: mintPreview }));
+      setMintScreenshot(screenshot);
+      setMintStatus('ready');
+      setLaunchStatus('screenshot ready');
+      setSocial((state) => upsertSourcePostRecord(state, {
+        ...screenshot,
+        sourcePostUrl: mintSource.canonicalUrl,
+        launchStatus: 'screenshot ready',
+        preview: mintPreview
+      }));
+      notify('The preserved screenshot was captured again.');
+    } catch (error) {
+      setMintStatus('capture-failed');
+      setLaunchStatus('failed');
+      notify(error.message || 'Screenshot capture failed.', 'error');
+    }
+  };
+
+  const viewScreenshot = (asset = mintScreenshot) => {
+    if (!isScreenshotReady(asset)) return notify('There is no saved screenshot to view yet.', 'error');
+    window.open(asset.screenshotUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  const openToken = (tokenId) => {
+    if (!tokenId) return;
+    setSelectedTokenId(tokenId);
+    openPanel('token-detail');
+  };
+
+  const shareCoin = async (token) => {
+    if (!token) return;
+    const link = `${window.location.origin}${window.location.pathname}#coin-${token.id}`;
+    try {
+      if (navigator.share) await navigator.share({ title: `$${token.ticker} on TweetMint`, text: 'One screenshot. One source post. One coin.', url: link });
+      else await navigator.clipboard.writeText(link);
+      notify(navigator.share ? 'Coin share sheet opened.' : 'Coin link copied.');
+    } catch (error) {
+      if (error?.name !== 'AbortError') notify('Coin share failed in this browser.', 'error');
+    }
+  };
+
+  const prepareLaunch = () => {
+    const ticker = normalizeTicker(mintTicker);
+    if (!mintSource || !isScreenshotReady(mintScreenshot)) {
+      setLaunchStatus('failed');
+      return notify('Capture the source screenshot before preparing a launch.', 'error');
+    }
+    if (!/^[A-Z0-9]{2,10}$/.test(ticker)) {
+      return notify('Ticker must be 2–10 letters or numbers.', 'error');
+    }
+    setMintTicker(ticker);
+    setLaunchStatus('checking canonical record');
+    const existing = social.tokens.find((token) => String(token.sourcePostId) === mintSource.postId || (mintSource.canonicalUrl && token.sourcePostUrl === mintSource.canonicalUrl));
+    if (existing) {
+      setLaunchStatus(existing.verifiedOnChain ? 'launched' : 'pending confirmation');
+      openToken(existing.id);
+      return;
+    }
+    if (!walletState.address) {
+      setLaunchStatus('awaiting wallet');
+      setSocial((state) => upsertSourcePostRecord(state, {
+        ...mintScreenshot,
+        sourcePostId: mintSource.postId,
+        sourcePostUrl: mintSource.canonicalUrl,
+        tokenTicker: ticker,
+        launchStatus: 'awaiting wallet',
+        launchPlatform: 'pump.fun',
+        preview: mintPreview
+      }));
+      notify('Connect Phantom or Solflare before opening the pump.fun launch.', 'error');
+      openPanel('wallet');
+      return;
+    }
+    const draft = buildPumpFunLaunchDraft({
+      source: mintSource,
+      screenshot: mintScreenshot,
+      ticker,
+      name: mintTokenName || `${ticker} Coin`,
+      walletAddress: walletState.address,
+      network: walletState.network || SOLANA_NETWORK
+    });
+    setLaunchDraft(draft);
+    setLaunchStatus('preparing');
+    setSocial((state) => upsertSourcePostRecord(state, {
+      ...mintScreenshot,
+      sourcePostUrl: mintSource.canonicalUrl,
+      sourcePostId: mintSource.postId,
+      tokenTicker: ticker,
+      launchStatus: 'preparing',
+      launchPlatform: 'pump.fun',
+      preview: mintPreview
+    }));
+  };
+
+  const openPumpFunLaunch = () => {
+    if (!launchDraft) return prepareLaunch();
+    setLaunchStatus('submitting to pump.fun');
+    window.open(buildPumpFunLaunchUrl(), '_blank', 'noopener,noreferrer');
+    setLaunchStatus('pending confirmation');
+    setSocial((state) => upsertSourcePostRecord(state, {
+      ...mintScreenshot,
+      sourcePostId: mintSource.postId,
+      sourcePostUrl: mintSource.canonicalUrl,
+      tokenTicker: launchDraft.ticker,
+      launchStatus: 'pending confirmation',
+      launchPlatform: 'pump.fun',
+      creatorWallet: walletState.address,
+      launchDraft,
+      preview: mintPreview
+    }));
+    notify('Pump.fun opened. Approve the launch there, then paste the returned mint to verify it.');
+  };
+
+  const verifyLaunch = async () => {
+    if (!launchDraft || !mintAddress.trim()) return notify('Paste the mint address returned by pump.fun.', 'error');
+    setLaunchStatus('pending confirmation');
+    try {
+      const verification = await verifySolanaMint(mintAddress, { network: walletState.network || SOLANA_NETWORK });
+      if (!verification.confirmed) throw new Error('That address is not a confirmed SPL mint on the selected Solana network.');
+      const confirmedAt = new Date().toISOString();
+      const token = {
+        id: `tweetmint-coin-${mintSource.postId}`,
+        name: launchDraft.name,
+        ticker: launchDraft.ticker,
+        sourcePostId: mintSource.postId,
+        sourcePostUrl: mintSource.canonicalUrl,
+        mintAddress: verification.mintAddress,
+        creatorWallet: launchDraft.creatorWallet,
+        launchPlatform: 'pump.fun',
+        launchStatus: 'launched',
+        launchTimestamp: confirmedAt,
+        network: walletState.network || SOLANA_NETWORK,
+        pumpFunUrl: buildPumpFunCoinUrl(verification.mintAddress),
+        explorerUrl: getExplorerUrl(verification.mintAddress, walletState.network || SOLANA_NETWORK),
+        screenshotAssetId: mintScreenshot.screenshotAssetId
+      };
+      setSocial((state) => confirmTokenLaunch(state, { token, confirmedAt }));
+      setLaunchStatus('launched');
+      setMintAddress(verification.mintAddress);
+      notify(`$${token.ticker} verified on Solana and saved as the canonical coin.`);
+      openToken(token.id);
+    } catch (error) {
+      setLaunchStatus('failed');
+      setSocial((state) => upsertSourcePostRecord(state, {
+        ...mintScreenshot,
+        sourcePostId: mintSource.postId,
+        sourcePostUrl: mintSource.canonicalUrl,
+        tokenTicker: launchDraft.ticker,
+        launchStatus: 'failed',
+        launchPlatform: 'pump.fun',
+        creatorWallet: launchDraft.creatorWallet,
+        launchDraft,
+        preview: mintPreview
+      }));
+      notify(error.message || 'Solana mint verification failed.', 'error');
     }
   };
 
   const connectWallet = async (provider) => {
     const connection = await walletState.connect(provider);
-    if (connection) notify(`${connection.name} connected. Your Solana account is ready.`);
+    if (connection) {
+      if (launchStatus === 'awaiting wallet') setLaunchStatus('preparing');
+      notify(`${connection.name} connected. Your Solana account is ready.`);
+    }
     else if (useWalletStore.getState().connectionError) notify(useWalletStore.getState().connectionError, 'error');
   };
 
@@ -342,6 +643,15 @@ export default function App() {
     }
   };
 
+  const copyText = async (value, message = 'Copied.') => {
+    try {
+      await navigator.clipboard.writeText(String(value));
+      notify(message);
+    } catch {
+      notify('Copy failed in this browser.', 'error');
+    }
+  };
+
   const resetLocalWorld = () => {
     try {
       window.localStorage.removeItem(STORAGE_KEY);
@@ -352,16 +662,25 @@ export default function App() {
     setMintStatus('idle');
     setMintSource(null);
     setMintPreview(null);
+    setMintScreenshot(null);
+    setMintCaption('');
+    setMintTicker('');
+    setMintTokenName('');
+    setLaunchStatus('idle');
+    setMintAddress('');
+    setLaunchDraft(null);
+    setSelectedTokenId(null);
     notify('The plaza has been reset.');
   };
 
   const nav = [
-    ['world', 'World', Gamepad2], ['feed', 'Feed', MessageCircle], ['trending', 'Trending', Flame], ['mint', 'Launch', Plus], ['tokens', 'Tokens', Coins], ['profile', 'Profile', UserRound]
+    ['world', 'World', Gamepad2], ['feed', 'Feed', MessageCircle], ['trending', 'Trending', Flame], ['mint', 'Launch', Plus], ['tokens', 'Tokens', Coins], ['how', 'How it works', HelpCircle], ['profile', 'Profile', UserRound]
   ];
   const mobileNav = [
-    ['world', 'World', Gamepad2], ['feed', 'Feed', MessageCircle], ['composer', 'Post', Feather], ['mint', 'Launch', Plus], ['tokens', 'Tokens', Coins]
+    ['world', 'World', Gamepad2], ['feed', 'Feed', MessageCircle], ['composer', 'Post', Feather], ['mint', 'Launch', Plus], ['tokens', 'Tokens', Coins], ['archive', 'Archive', Eye]
   ];
-  const duplicateToken = mintSource && social.tokens.some((token) => String(token.sourcePostId) === mintSource.postId || token.sourcePostUrl === mintSource.canonicalUrl);
+  const duplicateToken = mintSource && social.tokens.find((token) => String(token.sourcePostId) === mintSource.postId || (mintSource.canonicalUrl && token.sourcePostUrl === mintSource.canonicalUrl));
+  const mintRecord = mintSource ? getSourcePostRecord(social, mintSource.postId) : null;
 
   return (
     <main className="app-shell">
@@ -391,7 +710,7 @@ export default function App() {
           </div>
 
           <StatsBoard stats={communityStats} paused={autonomyPaused} onTogglePause={() => setAutonomyPaused((value) => !value)} />
-          <AnnouncementStack announcements={social.announcements || []} onOpen={showPost} onToken={() => openPanel('tokens')} onHistory={() => openPanel('announcements')} />
+          <AnnouncementStack announcements={social.announcements || []} sourcePosts={social.sourcePosts || []} onOpen={showPost} onToken={openToken} onHistory={() => openPanel('announcements')} />
 
           <aside className="activity-board" aria-label="Recent community activity">
             <header><span>✦ PLAZA PULSE</span><span>COMMUNITY</span></header>
@@ -412,6 +731,7 @@ export default function App() {
             <button className="dock-button" type="button" onClick={() => openZone('trending')}><Flame /> Trending</button>
             <button className="dock-button" type="button" onClick={() => openZone('mint')}><TerminalSquare /> Mint station</button>
             <button className="dock-button" type="button" onClick={() => openZone('trading')}><Coins /> Coin garden</button>
+            <button className="dock-button" type="button" onClick={() => openZone('archive')}><Eye /> Post archive</button>
             <button className="dock-button" type="button" onClick={() => openZone('wallet')}><Wallet /> Wallet station</button>
           </nav>
 
@@ -419,12 +739,15 @@ export default function App() {
             {panel && panel !== 'world' && (
               <motion.div className="window-layer" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                 {panel === 'composer' && <ComposerWindow text={composerText} setText={setComposerText} onPublish={submitPost} onClose={closePanel} />}
-                {(panel === 'feed' || panel === 'trending' || panel === 'community') && <FeedWindow posts={visiblePosts} filter={filter} setFilter={setFilter} panel={panel} getAuthor={actorFor} onOpen={showPost} onReact={reactTo} onShare={share} onClose={closePanel} />}
+                {(panel === 'feed' || panel === 'trending' || panel === 'community') && <FeedWindow posts={visiblePosts} filter={filter} setFilter={setFilter} panel={panel} getAuthor={actorFor} sourcePosts={social.sourcePosts || []} tokens={social.tokens} onOpen={showPost} onOpenToken={openToken} onReact={reactTo} onShare={share} onClose={closePanel} />}
                 {panel === 'detail' && selectedPost && <DetailWindow post={postForDisplay(selectedPost)} getAuthor={actorFor} social={social} currentUser={currentUser} commentText={commentText} setCommentText={setCommentText} replyingTo={replyingTo} setReplyingTo={setReplyingTo} onComment={submitComment} onReact={reactTo} onReactComment={reactToComment} onShare={share} onClose={closePanel} />}
                 {panel === 'profile' && selectedCharacter && <ProfileWindow character={selectedCharacter} posts={social.posts} getAuthor={actorFor} onOpen={showPost} onClose={closePanel} />}
-                {panel === 'mint' && <MintWindow value={mintUrl} onChange={updateMintUrl} status={mintStatus} statusMessage={mintStatusMessages[mintStatus]} source={mintSource} preview={mintPreview} duplicate={duplicateToken} onPaste={pasteMintUrl} onClear={() => updateMintUrl('')} onCheck={checkMintUrl} onClose={closePanel} />}
-                {panel === 'tokens' && <TokensWindow tokens={social.tokens} posts={social.posts} onOpen={showPost} onClose={closePanel} />}
-                {panel === 'announcements' && <AnnouncementsWindow announcements={social.announcementHistory || []} onOpen={showPost} onToken={() => openPanel('tokens')} onClose={closePanel} />}
+                {panel === 'mint' && <MintWindow status={mintStatus} statusMessage={mintStatusMessages[mintStatus]} launchStatus={launchStatus} source={mintSource} sourceRecord={mintRecord} preview={mintPreview} screenshot={mintScreenshot} caption={mintCaption} onCaptionChange={updateMintCaption} onUploadImage={uploadMintImage} ticker={mintTicker} setTicker={setMintTicker} tokenName={mintTokenName} setTokenName={setMintTokenName} mintAddress={mintAddress} setMintAddress={setMintAddress} launchDraft={launchDraft} duplicate={duplicateToken} onClear={() => updateMintUrl('')} onCheck={checkMintUrl} onRecapture={recaptureScreenshot} onViewScreenshot={viewScreenshot} onContinue={prepareLaunch} onOpenPumpFun={openPumpFunLaunch} onVerifyLaunch={verifyLaunch} onViewExisting={openToken} onClose={closePanel} onHowItWorks={() => openPanel('how')} wallet={wallet} network={walletState.network || SOLANA_NETWORK} />}
+                {panel === 'tokens' && <TokensWindow tokens={social.tokens} posts={social.posts} sourcePosts={social.sourcePosts || []} onOpen={showPost} onOpenToken={openToken} onClose={closePanel} />}
+                {panel === 'token-detail' && selectedToken && <TokenDetailWindow token={selectedToken} source={selectedTokenSource} post={selectedTokenPost ? postForDisplay(selectedTokenPost) : null} getAuthor={actorFor} onOpenPost={showPost} onReact={reactTo} onSharePost={share} onViewScreenshot={() => viewScreenshot(selectedTokenSource)} onShare={shareCoin} onCopy={copyText} onClose={closePanel} />}
+                {panel === 'announcements' && <AnnouncementsWindow announcements={social.announcementHistory || []} sourcePosts={social.sourcePosts || []} onOpen={showPost} onToken={openToken} onClose={closePanel} />}
+                {panel === 'archive' && <ArchiveWindow sourcePosts={social.sourcePosts || []} tokens={social.tokens} onOpenToken={openToken} onClose={closePanel} />}
+                {panel === 'how' && <HowItWorksWindow onLaunch={() => openPanel('mint')} onClose={closePanel} />}
                 {panel === 'wallet' && <WalletWindow wallet={wallet} walletState={walletState} onConnect={connectWallet} onDisconnect={disconnectWallet} onRefresh={() => walletState.refreshBalance()} onCopy={copyWalletAddress} onClose={closePanel} />}
               </motion.div>
             )}
@@ -458,22 +781,23 @@ function StatsBoard({ stats, paused, onTogglePause }) {
   return <aside className="stats-board" aria-label="Live community statistics"><header><span>✦ PLAZA STATS</span><span>SOLANA</span><button className="stats-pause" type="button" onClick={onTogglePause}>{paused ? 'play' : 'pause'}</button></header><div className="stats-grid">{entries.map(([label, value]) => <div className="stat-item" key={`${label}-${value}`}><strong>{value}</strong><span>{label}</span></div>)}</div></aside>;
 }
 
-function AnnouncementStack({ announcements, onOpen, onToken, onHistory }) {
+function AnnouncementStack({ announcements, sourcePosts, onOpen, onToken, onHistory }) {
   if (!announcements.length) return null;
-  return <aside className="announcement-stack" aria-label="Live announcements"><header><span>✦ LIVE EVENTS</span><button type="button" onClick={onHistory}>history</button></header>{announcements.slice(0, 3).map((announcement) => <button className="announcement-card" type="button" key={announcement.id} onClick={() => announcement.postId ? onOpen({ id: announcement.postId }) : announcement.tokenId && onToken()}><span className="announcement-icon">✦</span><span>{announcement.text}</span></button>)}</aside>;
+  return <aside className="announcement-stack" aria-label="Live announcements"><header><span>✦ LIVE EVENTS</span><button type="button" onClick={onHistory}>history</button></header>{announcements.slice(0, 3).map((announcement) => { const source = sourcePosts.find((item) => String(item.sourcePostId) === String(announcement.sourcePostId)); return <button className="announcement-card" type="button" key={announcement.id} onClick={() => announcement.postId ? onOpen({ id: announcement.postId }) : announcement.tokenId && onToken(announcement.tokenId)}>{source && <PostScreenshot asset={source} variant="thumb" alt="Original post thumbnail" />}<span className="announcement-icon">✦</span><span>{announcement.text}</span></button>; })}</aside>;
 }
 
-function AnnouncementsWindow({ announcements, onOpen, onToken, onClose }) {
-  return <div className="floating-window announcements-window"><PixelWindow eyebrow="EVENT LOG" title="Announcement history" onClose={onClose}><div className="window-body compact">{announcements.slice(0, 30).map((announcement) => <button className="announcement-history-item" type="button" key={announcement.id} onClick={() => announcement.postId ? onOpen({ id: announcement.postId }) : announcement.tokenId && onToken()}><span>{announcement.text}</span><time>{formatCompactDate(announcement.createdAt)}</time></button>)}</div></PixelWindow></div>;
+function AnnouncementsWindow({ announcements, sourcePosts, onOpen, onToken, onClose }) {
+  return <div className="floating-window announcements-window"><PixelWindow eyebrow="EVENT LOG" title="Announcement history" onClose={onClose}><div className="window-body compact">{announcements.slice(0, 30).map((announcement) => { const source = sourcePosts.find((item) => String(item.sourcePostId) === String(announcement.sourcePostId)); return <button className="announcement-history-item" type="button" key={announcement.id} onClick={() => announcement.postId ? onOpen({ id: announcement.postId }) : announcement.tokenId && onToken(announcement.tokenId)}>{source && <PostScreenshot asset={source} variant="thumb" alt="Original post thumbnail" />}<span>{announcement.text}</span><time>{formatCompactDate(announcement.createdAt)}</time></button>; })}</div></PixelWindow></div>;
 }
 
 function ComposerWindow({ text, setText, onPublish, onClose }) {
-  return <div className="floating-window composer-window"><PixelWindow eyebrow="POST TERMINAL" title="Compose for the plaza" onClose={onClose}><div className="window-body"><p className="panel-note"><TerminalSquare />This post stays in TweetMint and is not published to X or another service.</p><textarea className="composer-textarea" value={text} maxLength="500" placeholder="What is happening in the plaza?" onChange={(event) => setText(event.target.value)} /><div className="composer-footer"><span className="counter">{text.length}/500</span><button className="pixel-button primary" type="button" onClick={onPublish}><Send /> Publish post</button></div></div></PixelWindow></div>;
+  return <div className="floating-window composer-window"><PixelWindow eyebrow="POST TERMINAL" title="Compose for the plaza" onClose={onClose}><div className="window-body"><p className="panel-note"><TerminalSquare />Posting is open to everyone. A wallet is only needed when you choose a pump.fun launch.</p><textarea className="composer-textarea" value={text} maxLength="500" placeholder="What is happening in the plaza?" onChange={(event) => setText(event.target.value)} /><div className="composer-footer"><span className="counter">{text.length}/500</span><button className="pixel-button primary" type="button" onClick={onPublish}><Send /> Publish post</button></div></div></PixelWindow></div>;
 }
 
-function FeedWindow({ posts, filter, setFilter, panel, getAuthor, onOpen, onReact, onShare, onClose }) {
+function FeedWindow({ posts, filter, setFilter, panel, getAuthor, sourcePosts, tokens, onOpen, onOpenToken, onReact, onShare, onClose }) {
   const title = panel === 'community' ? 'Social Lounge' : panel === 'trending' ? 'Trending Wall' : 'Community Feed';
-  return <div className="floating-window feed-window"><PixelWindow eyebrow={panel === 'trending' ? 'TRENDING WALL' : 'COMMUNITY FEED BOARD'} title={title} onClose={onClose}><div className="window-body compact"><div className="feed-toolbar">{TRENDING_FILTERS.map((item) => <button key={item} type="button" className={`filter-button ${filter === item ? 'is-active' : ''}`} onClick={() => setFilter(item)}>{prettify(item)}</button>)}</div>{posts.map((post) => <PostCard key={post.id} post={post} author={getAuthor(post.authorId)} onOpen={onOpen} onReact={onReact} onShare={onShare} />)}</div></PixelWindow></div>;
+  const preserved = sourcePosts.filter((record) => record.screenshotStatus === 'ready').slice(0, 4);
+  return <div className="floating-window feed-window"><PixelWindow eyebrow={panel === 'trending' ? 'TRENDING WALL' : 'COMMUNITY FEED BOARD'} title={title} onClose={onClose}><div className="window-body compact"><div className="feed-toolbar">{TRENDING_FILTERS.map((item) => <button key={item} type="button" className={`filter-button ${filter === item ? 'is-active' : ''}`} onClick={() => setFilter(item)}>{prettify(item)}</button>)}</div>{preserved.length > 0 && <section className="preserved-feed" aria-label="Recently minted preserved posts"><header><span>✦ PRESERVED POST WALL</span><small>SCREENSHOT → COIN</small></header>{preserved.map((record) => { const token = tokens.find((item) => String(item.sourcePostId) === String(record.sourcePostId)); return <button className="preserved-feed-card" type="button" key={record.screenshotAssetId} onClick={() => token ? onOpenToken(token.id) : undefined}><PostScreenshot asset={record} variant="thumb" alt="Preserved source post thumbnail" /><span><strong>{token ? `$${token.ticker}` : 'SOURCE POST'}</strong><small>{record.sourceAuthorUsername ? `@${record.sourceAuthorUsername}` : 'Author unavailable'} · {record.launchStatus || 'captured'}</small></span></button>; })}</section>}{posts.map((post) => <PostCard key={post.id} post={post} author={getAuthor(post.authorId)} onOpen={onOpen} onReact={onReact} onShare={onShare} />)}</div></PixelWindow></div>;
 }
 
 function DetailWindow({ post, getAuthor, social, currentUser, commentText, setCommentText, replyingTo, setReplyingTo, onComment, onReact, onReactComment, onShare, onClose }) {
@@ -495,16 +819,51 @@ function ProfileWindow({ character, posts, onOpen, onClose }) {
   return <div className="floating-window profile-window"><PixelWindow eyebrow="PLAZA MEMBER" title="Profile station" onClose={onClose}><div className="profile-hero"><Avatar character={character} size={52} /><div><h2 className="profile-name">{character.displayName}</h2><div className="profile-handle">{character.username}</div><p className="profile-bio">{character.isFictional ? `${character.personality}. Into ${(character.interests || []).join(', ')}.` : 'Posts are kept in this browser until a server is configured.'}</p></div></div><div className="profile-stats"><div className="profile-stat"><strong>{authored.length}</strong><span>posts</span></div><div className="profile-stat"><strong>{character.isFictional ? 'MEMBER' : 'VISITOR'}</strong><span>identity</span></div><div className="profile-stat"><strong>—</strong><span>followers</span></div></div><div className="window-body compact">{authored.slice(0, 4).map((post) => <button key={post.id} className="mini-action" type="button" onClick={() => onOpen(post)}>Open: {post.content.slice(0, 42)}…</button>)}</div></PixelWindow></div>;
 }
 
-function MintWindow({ value, onChange, status, statusMessage, source, preview, duplicate, onPaste, onClear, onCheck, onClose }) {
+function MintWindow({ status, statusMessage, launchStatus, source, sourceRecord, preview, screenshot, caption, onCaptionChange, onUploadImage, ticker, setTicker, tokenName, setTokenName, mintAddress, setMintAddress, launchDraft, duplicate, onClear, onCheck, onRecapture, onViewScreenshot, onContinue, onOpenPumpFun, onVerifyLaunch, onViewExisting, onClose, onHowItWorks, wallet, network }) {
   const previewData = preview?.data || preview;
-  const author = previewData?.author?.username || previewData?.author?.name || previewData?.username || previewData?.authorName;
-  const content = previewData?.text || previewData?.content;
+  const author = previewData?.author?.username || previewData?.author?.name || previewData?.username || previewData?.authorName || screenshot?.sourceAuthorUsername;
+  const content = previewData?.text || previewData?.content || screenshot?.sourcePostText;
   const parsed = Boolean(source?.postId);
-  return <div className="floating-window mint-window"><PixelWindow eyebrow="MINT STATION" title="Canonical launch control" onClose={onClose}><div className="mint-panel"><div className="mint-machine-art"><div className="mint-machine-screen">MINT OFFLINE<small>CONFIGURE SERVER TO ARM</small></div></div><p className="panel-note"><TerminalSquare />X post IDs are parsed locally first. Retrieval, canonical checks, job processing, RPC confirmation, and reply publishing require configured server credentials.</p><label className="muted" htmlFor="x-url">Source X post URL</label><div className="form-row mint-url-row"><input className="field-input" id="x-url" value={value} placeholder="https://x.com/name/status/…" aria-invalid={Boolean(statusMessage && !parsed)} onChange={(event) => onChange(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); onCheck(); } }} /><button className="pixel-button" type="button" onClick={onPaste}><Copy /> Paste</button><button className="pixel-button" type="button" onClick={onClear} disabled={!value}><XCircle /> Clear</button><button className="pixel-button warning" type="button" onClick={onCheck} disabled={status === 'loading'}><Search /> {status === 'loading' ? 'Checking…' : 'Check'}</button></div>{status === 'loading' && <div className="status-row"><RefreshCw />Retrieving the post from the configured X API…</div>}{parsed && <div className="status-row success"><Bell />Source ID <code>{source.postId}</code> parsed locally. <a className="wallet-link" href={source.canonicalUrl} target="_blank" rel="noreferrer">View original post</a></div>}{statusMessage && !['loading', 'ready'].includes(status) && <div className={`status-row ${['invalid-url', 'unsupported-domain', 'missing-post-id'].includes(status) ? 'error' : 'warning'}`}><XCircle />{statusMessage}</div>}{duplicate && <div className="status-row warning"><Bell />A canonical TweetMint token is already associated with this source post.</div>}{preview && <article className="post-preview"><p className="muted">X POST PREVIEW</p>{author && <strong>{author}</strong>}{content && <p>{content}</p>}{previewData?.createdAt && <time>{formatCompactDate(previewData.createdAt)}</time>}</article>}{['deleted-post', 'private', 'credits-depleted', 'rate-limit', 'auth-failure', 'network-failure', 'api-unavailable', 'unavailable', 'configuration'].includes(status) && <button className="pixel-button" type="button" onClick={onCheck}><RefreshCw /> Retry lookup</button>}<div className="steps"><div className={`step ${parsed ? 'active' : ''}`}>1 · Local URL parsing</div><div className={`step ${status === 'loading' || status === 'ready' ? 'active' : ''}`}>2 · Authorized X content lookup</div><div className="step blocked">3 · Canonical token constraint</div><div className="step blocked">4 · Confirmed Solana deployment</div></div><button className="pixel-button" type="button" disabled title="Requires configured server-side integrations"><Coins /> Launch unavailable</button></div></PixelWindow></div>;
+  const captureReady = isScreenshotReady(screenshot);
+  const hasError = ['invalid-url', 'unsupported-domain', 'missing-post-id', 'capture-failed'].includes(status);
+  const existingTicker = duplicate?.ticker || sourceRecord?.tokenTicker;
+  const launchSteps = [
+    ['screenshot ready', '1 · Screenshot asset'],
+    ['checking canonical record', '2 · Canonical post check'],
+    ['awaiting wallet', '3 · Wallet approval'],
+    ['submitting to pump.fun', '4 · Pump.fun launch'],
+    ['pending confirmation', '5 · Solana confirmation'],
+    ['launched', '6 · Coin page live']
+  ];
+  return <div className="floating-window mint-window"><PixelWindow eyebrow="MINT STATION · PUMP.FUN" title="Preserved post launch control" onClose={onClose}><div className="mint-panel"><div className="mint-machine-art"><div className="mint-machine-screen">{captureReady ? 'SCREENSHOT READY' : 'POST ARCHIVE'}<small>{captureReady ? 'PREPARE THE COIN' : 'CAPTURE THE SOURCE POST'}</small></div></div><p className="panel-note"><TerminalSquare />TweetMint saves the source post as an image first. The screenshot stays attached to the canonical coin; pump.fun approval happens in your connected wallet.</p><div className="mint-help-row"><button className="pixel-button secondary" type="button" onClick={onHowItWorks}><HelpCircle /> How it works</button><span>One screenshot. One source post. One coin.</span></div><div className="mint-input-grid"><label className="field-label" htmlFor="post-image">POST IMAGE<span className="upload-control"><Upload /> {captureReady ? 'Replace image' : 'Upload image'}<input className="upload-input" id="post-image" type="file" accept="image/*" onChange={(event) => onUploadImage(event.target.files?.[0])} /></span></label><label className="field-label" htmlFor="post-caption">CAPTION<textarea className="field-input caption-input" id="post-caption" value={caption} maxLength="500" placeholder="Write a caption for the post…" onChange={(event) => onCaptionChange(event.target.value)} /></label></div>{status === 'loading' && <div className="status-row"><RefreshCw />Parsing the source ID and saving the screenshot locally…</div>}{hasError && <div className={`status-row ${['invalid-url', 'unsupported-domain', 'missing-post-id'].includes(status) ? 'error' : 'warning'}`}><XCircle />{statusMessage || 'Local screenshot capture failed.'}</div>}{parsed && <section className="mint-preview-card" aria-label="Preserved X post preview"><div className="mint-screenshot-hero"><PostScreenshot asset={screenshot} alt="Preserved screenshot of the original X post" onRetry={source?.sourceType === 'local-upload' ? undefined : onRecapture} /></div><div className="mint-source-details"><p className="muted">PRESERVED POST IMAGE</p><h2>{author ? `@${String(author).replace(/^@/, '')}` : 'Author unavailable'}</h2>{content ? <p className="mint-post-text">{content}</p> : <p className="mint-post-text muted">Add a caption to label this uploaded image.</p>}<dl className="source-meta"><div><dt>CAPTURE STATUS</dt><dd className={captureReady ? 'meta-ready' : ''}>{captureReady ? 'SAVED IMAGE ASSET' : screenshot?.screenshotStatus || 'WAITING'}</dd></div><div><dt>ELIGIBILITY</dt><dd>{captureReady ? 'ELIGIBLE TO LAUNCH' : 'WAITING FOR CAPTURE'}</dd></div><div><dt>EXISTING COIN CHECK</dt><dd>{duplicate ? 'THIS POST IS ALREADY A COIN' : 'NO CANONICAL COIN FOUND'}</dd></div></dl>{previewData?.createdAt && <time className="muted">POSTED · {formatCompactDate(previewData.createdAt)}</time>}<div className="screenshot-actions"><button className="pixel-button" type="button" onClick={() => onViewScreenshot(screenshot)} disabled={!captureReady}><Eye /> View Full Screenshot</button>{captureReady && <a className="pixel-button" href={screenshot.screenshotUrl} download={`tweetmint-${source.postId}.${screenshot.screenshotFormat || 'png'}`}><Download /> Save Image</a>}{source?.sourceType !== 'local-upload' && <button className="pixel-button" type="button" onClick={onRecapture} disabled={!parsed}><RefreshCw /> Re-capture</button>}<button className="pixel-button" type="button" onClick={onClear}>Cancel</button></div></div></section>}{duplicate && <section className="duplicate-coin-card"><p className="duplicate-title">THIS POST IS ALREADY A COIN</p><PostScreenshot asset={screenshot || sourceRecord} variant="thumb" alt="Existing coin source screenshot" /><div><strong>${existingTicker || 'COIN'}</strong><span>Launch platform · {duplicate.launchPlatform || 'pump.fun'}</span><span>Mint · {duplicate.mintAddress ? `${duplicate.mintAddress.slice(0, 8)}…${duplicate.mintAddress.slice(-6)}` : 'confirmation pending'}</span><button className="pixel-button primary" type="button" onClick={() => onViewExisting(duplicate.id)}>View Existing Coin</button></div></section>}{captureReady && !duplicate && <section className="launch-form"><p className="muted">STEP 3 · CHOOSE A TICKER</p><div className="form-grid"><label className="field-label" htmlFor="token-ticker">TOKEN TICKER<input className="field-input" id="token-ticker" value={ticker} maxLength="10" placeholder="CHAIR" onChange={(event) => setTicker(normalizeTicker(event.target.value))} /></label><label className="field-label" htmlFor="token-name">TOKEN NAME<input className="field-input" id="token-name" value={tokenName} maxLength="32" placeholder="Chair Coin" onChange={(event) => setTokenName(event.target.value)} /></label></div><div className="launch-facts"><span>PLATFORM · <strong>pump.fun</strong></span><span>NETWORK · <strong>{networkLabel(network)}</strong></span><span>WALLET · <strong>{wallet ? `${wallet.provider} ${wallet.address.slice(0, 5)}…${wallet.address.slice(-4)}` : 'NOT CONNECTED'}</strong></span><span>COST · <strong>Shown by pump.fun before approval</strong></span></div>{launchStatus !== 'idle' && <div className="launch-status"><span>LAUNCH STATUS</span><strong>{launchStatus.toUpperCase()}</strong></div>}{!launchDraft ? <button className="pixel-button primary" type="button" onClick={onContinue}><Coins /> Continue to Launch</button> : <><div className="launch-draft"><strong>LAUNCH DATA PREPARED</strong><span>Image, caption, {launchDraft.ticker}, and creator wallet are ready for pump.fun.</span></div><div className="window-actions"><button className="pixel-button primary" type="button" onClick={onOpenPumpFun}><ExternalLink /> Open pump.fun Launch</button><a className="pixel-button" href={screenshot.screenshotUrl} download={`tweetmint-${source.postId}.${screenshot.screenshotFormat || 'png'}`}><Download /> Download Screenshot</a></div><label className="field-label" htmlFor="mint-address">MINT RETURNED BY PUMP.FUN<input className="field-input" id="mint-address" value={mintAddress} placeholder="Paste the Solana mint address" onChange={(event) => setMintAddress(event.target.value)} /></label><button className="pixel-button warning" type="button" onClick={onVerifyLaunch}><ShieldCheck /> Verify Launch on Solana</button></>}</section>}{hasError && <button className="pixel-button" type="button" onClick={onCheck}><RefreshCw /> Retry capture</button>}<div className="steps">{launchSteps.map(([step, label]) => <div className={`step ${launchStatus === step || (step === 'screenshot ready' && captureReady) ? 'active' : ''}`} key={step}>{label}</div>)}</div></div></PixelWindow></div>;
 }
 
-function TokensWindow({ tokens, posts, onOpen, onClose }) {
-  return <div className="floating-window tokens-window"><PixelWindow eyebrow="COIN GARDEN" title="Token concepts" onClose={onClose}><p className="panel-note"><Coins />Only confirmed Solana deployments receive a live status or market link.</p><div className="token-list">{tokens.map((token) => { const post = posts.find((item) => item.id === token.sourcePostId); const confirmed = Boolean(token.verifiedOnChain && token.mintAddress); return <div className="token-entry" key={token.id}><button type="button" className="token-row" onClick={() => post && onOpen(post)}><span className="token-symbol">${token.ticker.slice(0, 3)}</span><span className="token-info"><strong>{token.name}</strong><span>Original post · {post?.content.slice(0, 40)}</span></span><span className="token-state">{confirmed ? 'DEPLOYED' : 'NOT DEPLOYED'}<small>{confirmed ? `${token.mintAddress.slice(0, 6)}…${token.mintAddress.slice(-4)}` : 'market data unavailable'}</small></span></button>{confirmed && <a className="token-explorer-link" href={`https://explorer.solana.com/address/${encodeURIComponent(token.mintAddress)}`} target="_blank" rel="noreferrer">View on Solana Explorer</a>}</div>; })}</div></PixelWindow></div>;
+function TokensWindow({ tokens, posts, sourcePosts, onOpen, onOpenToken, onClose }) {
+  return <div className="floating-window tokens-window"><PixelWindow eyebrow="COIN GARDEN" title="Coin discovery" onClose={onClose}><p className="panel-note"><Coins />Every confirmed coin keeps its source screenshot. Unconfirmed seeded concepts remain clearly marked.</p><div className="token-list">{tokens.map((token) => { const post = posts.find((item) => item.id === token.sourcePostId); const source = sourcePosts.find((item) => String(item.sourcePostId) === String(token.sourcePostId)); const confirmed = Boolean(token.verifiedOnChain && token.mintAddress); return <div className="token-entry" key={token.id}><button type="button" className="token-row" onClick={() => onOpenToken(token.id)}>{source && <PostScreenshot asset={source} variant="thumb" alt="Source post thumbnail" />}<span className="token-symbol">${token.ticker.slice(0, 3)}</span><span className="token-info"><strong>{token.name}</strong><span>{source ? `Source post ${source.sourcePostId} · ${source.sourceAuthorUsername ? `@${source.sourceAuthorUsername}` : 'author unavailable'}` : `Original post · ${post?.content?.slice(0, 40) || 'source record unavailable'}`}</span></span><span className="token-state">{token.freeDemo ? 'FREE DEMO' : confirmed ? 'DEPLOYED' : 'NOT DEPLOYED'}<small>{token.freeDemo ? 'no wallet required' : confirmed ? `${token.mintAddress.slice(0, 6)}…${token.mintAddress.slice(-4)}` : 'market data unavailable'}</small></span></button>{confirmed && <div className="token-links"><button className="token-explorer-link" type="button" onClick={() => onOpenToken(token.id)}>View Coin</button>{token.pumpFunUrl && <a className="token-explorer-link" href={token.pumpFunUrl} target="_blank" rel="noreferrer">View on pump.fun</a>}</div>}</div>; })}</div></PixelWindow></div>;
+}
+
+function TokenDetailWindow({ token, source, post, getAuthor, onOpenPost, onReact, onSharePost, onViewScreenshot, onShare, onCopy, onClose }) {
+  const confirmed = Boolean(token.verifiedOnChain && token.mintAddress);
+  const asset = source || token;
+  const copy = (value, label) => onCopy?.(value, label);
+  return <div className="floating-window token-detail-window"><PixelWindow eyebrow={`COIN PAGE · ${token.launchPlatform || 'TWEETMINT'}`} title={`$${token.ticker} · ${token.name}`} onClose={onClose}><div className="token-detail"><div className="token-detail-source"><PostScreenshot asset={asset} alt="Preserved original source post screenshot" />{post && <section className="token-source-post" aria-label="Source post and community activity"><p className="muted">SOURCE POST · REACTIONS · COMMENTS · SHARES</p><PostCard post={post} author={getAuthor(post.authorId)} onOpen={onOpenPost} onReact={onReact} onShare={onSharePost} /></section>}<div className="source-meta"><div><span>SOURCE AUTHOR</span><strong>{source?.sourceAuthorUsername ? `@${source.sourceAuthorUsername}` : post ? `@${getAuthor(post.authorId).username}` : 'Unavailable'}</strong></div><div><span>SOURCE POST ID</span><strong>{source?.sourcePostId || token.sourcePostId || 'Unavailable'}</strong></div><div><span>SOURCE POST TIMESTAMP</span><strong>{source?.sourcePostTimestamp || post?.createdAt || 'Unavailable'}</strong></div><div><span>CAPTURE TIMESTAMP</span><strong>{source?.screenshotCreatedAt || 'Unavailable'}</strong></div><button className="pixel-button" type="button" onClick={() => onViewScreenshot(asset)} disabled={!isScreenshotReady(asset)}><Eye /> View Source Screenshot</button></div></div><div className="token-detail-info"><div className="token-origin-connector"><span>POST SCREENSHOT</span><b>→</b><span>COIN</span></div><div className="token-page-status">{confirmed ? 'LAUNCHED' : token.freeDemo ? 'FREE DEMO · LOCAL ONLY' : 'CONCEPT · NOT DEPLOYED'}</div><h2>{token.name}</h2><div className="token-page-ticker">${token.ticker}</div><dl className="source-meta token-page-meta"><div><dt>LAUNCH PLATFORM</dt><dd>{token.launchPlatform || 'TweetMint local concept'}</dd></div><div><dt>LAUNCH STATUS</dt><dd>{token.launchStatus || token.status || 'not deployed'}</dd></div><div><dt>COST</dt><dd>{token.freeDemo ? 'FREE LOCAL DEMO' : confirmed ? 'Pump.fun costs shown before approval' : 'Not available until confirmed'}</dd></div><div><dt>MINT / CONTRACT</dt><dd>{token.mintAddress ? <button className="copy-value" type="button" onClick={() => copy(token.mintAddress, 'Mint address copied.')}>{token.mintAddress}</button> : 'Not available until confirmed'}</dd></div><div><dt>CREATOR WALLET</dt><dd>{token.creatorWallet || 'Not available'}</dd></div><div><dt>LAUNCH TIMESTAMP</dt><dd>{token.launchTimestamp || token.confirmedAt || 'Not launched'}</dd></div><div><dt>NETWORK</dt><dd>{token.network || 'Solana'}</dd></div></dl><div className="window-actions token-page-actions">{token.pumpFunUrl && <a className="pixel-button primary" href={token.pumpFunUrl} target="_blank" rel="noreferrer"><ExternalLink /> View on pump.fun</a>}{token.mintAddress && <a className="pixel-button" href={token.explorerUrl || `https://explorer.solana.com/address/${encodeURIComponent(token.mintAddress)}`} target="_blank" rel="noreferrer"><ExternalLink /> Solscan / Explorer</a>}{token.mintAddress && <button className="pixel-button" type="button" onClick={() => copy(token.mintAddress, 'Mint address copied.')}><Copy /> Copy Mint Address</button>}{token.sourcePostId && <button className="pixel-button" type="button" onClick={() => copy(token.sourcePostId, 'Source post ID copied.')}><Copy /> Copy Source Post ID</button>}<button className="pixel-button" type="button" onClick={() => onShare(token)}><Send /> Share Coin</button></div>{source?.sourcePostUrl && <a className="wallet-link source-link" href={source.sourcePostUrl} target="_blank" rel="noreferrer">View original X post</a>}</div></div></PixelWindow></div>;
+}
+
+function ArchiveWindow({ sourcePosts, tokens, onOpenToken, onClose }) {
+  const records = sourcePosts.filter((record) => record.screenshotStatus === 'ready');
+  return <div className="floating-window archive-window"><PixelWindow eyebrow="POST ARCHIVE BOARD" title="Preserved source wall" onClose={onClose}><p className="panel-note"><Eye />Saved screenshots stay attached to their source post and open the canonical coin page after launch.</p>{records.length ? <div className="archive-grid">{records.map((record) => { const token = tokens.find((item) => String(item.sourcePostId) === String(record.sourcePostId)); return <button className="archive-card" type="button" key={record.screenshotAssetId || record.sourcePostId} onClick={() => token && onOpenToken(token.id)}><PostScreenshot asset={record} variant="thumb" alt={`Preserved post ${record.sourcePostId}`} /><span><strong>{token ? `$${token.ticker}` : 'SOURCE CAPTURE'}</strong><small>POST {record.sourcePostId}</small><small>{token ? 'OPEN COIN PAGE' : 'AWAITING COIN'}</small></span></button>; })}</div> : <div className="empty-state">No preserved screenshots yet. Open the Mint Station to capture the first source post.</div>}</PixelWindow></div>;
+}
+
+function HowItWorksWindow({ onLaunch, onClose }) {
+  const sample = useMemo(() => createPostScreenshotAsset({ source: { postId: '1234567890123456789', canonicalUrl: 'https://x.com/tweetmint/status/1234567890123456789' }, preview: { data: { id: '1234567890123456789', text: 'A tiny thought can become a whole coin.', createdAt: '2026-10-12T00:00:00.000Z', author: { id: 'sample-author', name: 'TweetMint Sample', username: 'tweetmint' } } } }), []);
+  const steps = [
+    ['STEP 1 — FIND A POST', 'User sees a sample X post.'],
+    ['STEP 2 — CAPTURE THE POST', 'TweetMint turns the post into a preserved screenshot/photo asset.'],
+    ['STEP 3 — CHOOSE A TICKER', 'User defines the token ticker.'],
+    ['STEP 4 — LAUNCH ON PUMP.FUN', 'TweetMint prepares the coin launch for wallet approval.'],
+    ['STEP 5 — THE POST BECOMES A COIN', 'The screenshot remains tied to the coin forever inside TweetMint.']
+  ];
+  return <div className="floating-window how-window"><PixelWindow eyebrow="HOW IT WORKS" title="From post to preserved coin" onClose={onClose}><div className="how-content"><div className="how-hero"><PostScreenshot asset={sample} alt="Sample X post preserved as a screenshot" /><div><p>TweetMint preserves the original post as an image, then connects it to a Solana coin launch.</p><p>Every coin keeps its original post identity.</p><p>One screenshot. One source post. One coin.</p></div></div><div className="how-steps">{steps.map(([title, text], index) => <article className="how-step" key={title}><span>{String(index + 1).padStart(2, '0')}</span><div><strong>{title}</strong><p>{text}</p></div></article>)}</div><button className="pixel-button primary" type="button" onClick={onLaunch}><Coins /> Open Launch Station</button></div></PixelWindow></div>;
 }
 
 function WalletWindow({ wallet, walletState, onConnect, onDisconnect, onRefresh, onCopy, onClose }) {

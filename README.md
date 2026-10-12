@@ -11,12 +11,12 @@ npm run dev
 
 ## Runtime notes
 
-The seeded plaza provides starter accounts, posts, comments, reactions, and token concepts. New posts and interactions are stored in the current browser. X lookup, Solana deployment, prices, trades, and creator rewards require the corresponding server integrations; connected-wallet balances are read directly from the configured Solana RPC.
+The seeded plaza provides starter accounts, posts, comments, reactions, and token concepts. New posts and interactions are stored in the current browser. Solana deployment, prices, trades, and creator rewards require the corresponding server integrations; connected-wallet balances are read directly from the configured Solana RPC.
 
-X post retrieval uses the server-side Vite proxy at `GET /api/x/posts/:postId`. Put an X API Bearer Token in the local `.env` as `X_BEARER_TOKEN`; it is never exposed to the browser. The proxy calls X's single-post endpoint and returns a normalized preview after local URL parsing. `VITE_X_API_URL` can still point to an existing authenticated service exposing `GET /posts/:postId`, and `X_API_BASE_URL` is an optional server-side endpoint override for testing.
-
-`X_ACCESS_KEY` and `X_ACCESS_TOKEN_SECRET` are OAuth 1.0a credentials, not a Bearer Token. They are not sent as a Bearer Token. Add the app's Bearer Token from the X Developer Console before testing live post retrieval.
+TweetMint does not call X or require API credentials. The Mint Station accepts a local post image and caption, saves both with the preserved asset, and keeps the image/caption available through the coin flow. Existing X URLs can still be restored from browser-local state when present.
 
 Wallet connection uses the official Phantom and Solflare browser extensions through Wallet Standard discovery. Set `VITE_SOLANA_RPC_URL` to the Solana RPC endpoint for the selected network (and optionally `VITE_SOLANA_NETWORK=mainnet-beta|devnet|testnet`) for reliable SOL and SPL balance reads; the client falls back to Solana's public endpoint when unset.
 
-To turn this into a production product, add an authenticated backend with PostgreSQL/Redis, official X API credentials, a job queue and idempotent canonical-post constraint, Solana RPC/deployer configuration, and server-side wallet/creator-claim verification.
+The launch station prepares the preserved screenshot and metadata, opens `VITE_PUMPFUN_CREATE_URL` (default `https://pump.fun/create`), and never marks a token launched from the browser alone. Paste the mint returned by pump.fun; TweetMint marks it launched only after the configured Solana RPC confirms a Token Program account. A production deployment should replace browser-local source records/assets with authenticated object storage and an idempotent server-side canonical-post constraint.
+
+To turn this into a production product, add an authenticated backend with PostgreSQL/Redis, durable object storage, a job queue and idempotent canonical-post constraint, Solana RPC/deployer configuration, and server-side wallet/creator-claim verification.

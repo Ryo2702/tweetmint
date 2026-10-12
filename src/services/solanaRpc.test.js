@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchSolBalance, fetchSplTokenBalances, getExplorerUrl, rpcRequest } from './solanaRpc.js';
+import { fetchSolBalance, fetchSplTokenBalances, getExplorerUrl, rpcRequest, TOKEN_PROGRAM_ID, verifySolanaMint } from './solanaRpc.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -34,5 +34,19 @@ describe('solanaRpc', () => {
 
   it('uses the active Solana cluster in explorer links', () => {
     expect(getExplorerUrl('MintAddress', 'devnet')).toBe('https://explorer.solana.com/address/MintAddress?cluster=devnet');
+  });
+
+  it('only confirms a mint after Solana returns a token-program account', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ result: { value: { owner: TOKEN_PROGRAM_ID, data: { parsed: { info: {} } } } } })
+    }));
+    await expect(verifySolanaMint('11111111111111111111111111111111', { rpcUrl: 'https://rpc.example' })).resolves.toMatchObject({ confirmed: true });
+  });
+
+  it('does not confirm a missing mint account', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ result: { value: null } }) }));
+    await expect(verifySolanaMint('11111111111111111111111111111111', { rpcUrl: 'https://rpc.example' })).resolves.toMatchObject({ confirmed: false, reason: 'missing-account' });
   });
 });

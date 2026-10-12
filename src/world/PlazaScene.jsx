@@ -22,6 +22,7 @@ const actionFocus = {
   'post-shared': [575, 385],
   'browse-trending': [820, 260],
   'browse-coins': [1135, 455],
+  archive: [1110, 610],
   'conversation-started': [1080, 240],
 };
 
@@ -32,6 +33,7 @@ const zones = [
   { id: 'mint', label: 'MINT MACHINE', x: 80, y: 185, w: 190, h: 150, color: 0xffa14d },
   { id: 'wallet', label: 'WALLET STATION', x: 35, y: 380, w: 190, h: 88, color: 0x77dbe8 },
   { id: 'trading', label: 'TRADING CORNER', x: 1045, y: 402, w: 200, h: 105, color: 0xb7ff3c },
+  { id: 'archive', label: 'POST ARCHIVE BOARD', x: 1015, y: 560, w: 260, h: 104, color: 0xffb765 },
   { id: 'lounge', label: 'SOCIAL LOUNGE', x: 972, y: 185, w: 218, h: 106, color: 0xc393ff }
 ];
 
