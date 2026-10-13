@@ -1,5 +1,6 @@
 import { MessageCircle, Repeat2, Send, Sparkles } from 'lucide-react';
 import Avatar from './Avatar.jsx';
+import { safeSourceUrl } from '../state/newsFeed.js';
 
 const REACTION_EMOJI = {
   laugh: '😂',
@@ -41,6 +42,7 @@ export function PostCard({
   dense = false
 }) {
   const content = post.content || post.text || '';
+  const sourceUrl = safeSourceUrl(post.sourceUrl);
   const commentCount = post.commentCount ?? post.commentsCount ?? (Array.isArray(post.comments) ? post.comments.length : 0);
   const shareCount = post.shareCount ?? post.sharesCount ?? post.reposts ?? 0;
   const token = post.token || post.tokenTicker;
@@ -73,6 +75,7 @@ export function PostCard({
         </div>
       </div>
       <p className="post-content">{content}</p>
+      {sourceUrl && <p className="post-content muted">{post.isFictional ? 'Fictional community discussion' : 'Community discussion'} · Source: {post.sourcePublisher || 'original publisher'} · <a className="wallet-link" href={sourceUrl} target="_blank" rel="noopener noreferrer">Open original story</a></p>}
       {token && <span className="post-token"><Sparkles size={12} aria-hidden="true" /> {typeof token === 'string' ? token : token.ticker || token.symbol || 'TOKEN'}</span>}
 
       <footer className="post-actions" aria-label="Post actions">

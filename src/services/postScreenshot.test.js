@@ -46,5 +46,14 @@ describe('post screenshot assets', () => {
     });
     expect(isScreenshotReady(asset)).toBe(true);
   });
+
+  it('preserves an uploaded article image as a source-linked proposal', () => {
+    const asset = createUploadedScreenshotAsset({
+      source: { postId: 'news-123', sourceType: 'news', canonicalUrl: 'https://example.com/story', feedItemId: '123', sourceContentId: 'publisher-123' },
+      imageUrl: 'data:image/png;base64,image'
+    });
+    expect(asset).toMatchObject({ sourceType: 'news', sourcePostUrl: 'https://example.com/story', sourcePostId: 'news-123', feedItemId: '123', sourceContentId: 'publisher-123' });
+    expect(() => createPostScreenshotAsset({ source: { postId: 'news-123' } })).toThrow('numeric X post ID');
+  });
 });
 

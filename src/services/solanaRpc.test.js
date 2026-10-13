@@ -40,7 +40,7 @@ describe('solanaRpc', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({ result: { value: { owner: TOKEN_PROGRAM_ID, data: { parsed: { info: {} } } } } })
+      json: async () => ({ result: { value: { owner: TOKEN_PROGRAM_ID, data: { parsed: { type: 'mint', info: { isInitialized: true } } } } } })
     }));
     await expect(verifySolanaMint('11111111111111111111111111111111', { rpcUrl: 'https://rpc.example' })).resolves.toMatchObject({ confirmed: true });
   });
@@ -48,5 +48,10 @@ describe('solanaRpc', () => {
   it('does not confirm a missing mint account', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ result: { value: null } }) }));
     await expect(verifySolanaMint('11111111111111111111111111111111', { rpcUrl: 'https://rpc.example' })).resolves.toMatchObject({ confirmed: false, reason: 'missing-account' });
+  });
+
+  it('rejects a token holding account as launch confirmation', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ result: { value: { owner: TOKEN_PROGRAM_ID, data: { parsed: { type: 'account', info: { isInitialized: true } } } } } }) }));
+    await expect(verifySolanaMint('11111111111111111111111111111111', { rpcUrl: 'https://rpc.example' })).resolves.toMatchObject({ confirmed: false, reason: 'not-initialized-mint' });
   });
 });

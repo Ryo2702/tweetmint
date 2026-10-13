@@ -58,7 +58,7 @@ function renderScreenshot(source, width, height) {
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${SCREENSHOT_WIDTH} ${SCREENSHOT_HEIGHT}" role="img" aria-labelledby="title desc">
     <title id="title">Preserved X post ${safeId}</title>
-    <desc id="desc">A saved TweetMint screenshot of ${escapeXml(username)}'s source post.</desc>
+    <desc id="desc">A TweetMint source reference for ${escapeXml(username)}. This is not an official X screenshot.</desc>
     <rect width="1200" height="760" fill="#080b09"/>
     <rect x="34" y="34" width="1132" height="692" fill="#101710" stroke="#b8ff3b" stroke-width="4"/>
     <rect x="62" y="62" width="1076" height="72" fill="#182218" stroke="#4c5d49" stroke-width="2"/>
@@ -66,7 +66,7 @@ function renderScreenshot(source, width, height) {
     <text x="98" y="106" text-anchor="middle" font-family="monospace" font-size="22" font-weight="900" fill="#10140e">↗</text>
     <text x="136" y="91" font-family="monospace" font-size="20" font-weight="900" fill="#f7f0d8">${escapeXml(authorName)}</text>
     <text x="136" y="116" font-family="monospace" font-size="16" fill="#98a294">${escapeXml(username)}</text>
-    <text x="86" y="190" font-family="monospace" font-size="15" letter-spacing="2" fill="#ffb765">ORIGINAL X POST · PRESERVED BY TWEETMINT</text>
+    <text x="86" y="190" font-family="monospace" font-size="15" letter-spacing="2" fill="#ffb765">X SOURCE REFERENCE · NOT AN OFFICIAL SCREENSHOT</text>
     ${postLines}
     <line x1="86" y1="604" x2="1114" y2="604" stroke="#3d4d3b" stroke-width="2" stroke-dasharray="8 8"/>
     <text x="86" y="645" font-family="monospace" font-size="16" fill="#9ea697">POST ID  ${safeId}</text>
@@ -84,6 +84,7 @@ export function createPostScreenshotAsset({ source, preview, capturedAt = new Da
   const thumbSvg = renderScreenshot(normalized, 480, 304);
   return {
     screenshotAssetId: assetIdFor(normalized.sourcePostId),
+    captureKind: 'source-reference',
     screenshotUrl: dataUrl(svg),
     screenshotThumbUrl: dataUrl(thumbSvg),
     assetUrl: dataUrl(svg),
@@ -115,7 +116,13 @@ export function createUploadedScreenshotAsset({ source, imageUrl, thumbnailUrl =
     assetStatus: 'ready',
     screenshotMimeType: mimeType,
     screenshotFormat: String(mimeType).split('/')[1] || 'image',
-    sourceType: 'local-upload',
+    sourceType: source?.sourceType || 'local-upload',
+    sourceContentId: source?.sourceContentId || sourcePostId,
+    feedItemId: source?.feedItemId || null,
+    sourceName: source?.sourceName || null,
+    sourceAuthorUsername: source?.author?.handle || null,
+    sourceAuthorName: source?.author?.name || null,
+    sourcePostTimestamp: source?.publishedAt || null,
     sourcePostId,
     sourcePostUrl: source?.canonicalUrl || null,
     sourcePostText: caption

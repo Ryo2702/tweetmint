@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   addComment,
+  addNewsDiscussion,
   createInitialSocialState,
   createPost,
   confirmTokenLaunch,
@@ -14,6 +15,7 @@ import {
   getTrendingPosts,
   reactionTotal,
   recordProfileVisit,
+  refreshCommunityTopics,
   runAutonomousActivity,
   sharePost,
   toggleReaction,
@@ -40,6 +42,49 @@ describe('fictional community seed', () => {
 });
 
 describe('local social state helpers', () => {
+  it('refreshes unchanged old fictional topics while preserving visitor and edited history', () => {
+    const initial = createInitialSocialState();
+    const visitorState = createPost(initial, { content: 'Keep my visitor post.' });
+    const state = {
+      ...visitorState,
+      posts: visitorState.posts.map((post) => post.id === 'fictional-post-001' ? { ...post, content: "I spent $900 on a chair and somehow I'm still uncomfortable." } : post.id === 'fictional-post-002' ? { ...post, content: 'My edited discussion.', editedAt: '2026-10-13T00:00:00Z' } : post),
+      comments: visitorState.comments.map((comment) => comment.id === 'fictional-comment-001' ? { ...comment, content: 'Does the chair come with a wallet?' } : comment),
+    };
+    const next = refreshCommunityTopics(state);
+    expect(next.posts.find((post) => post.id === 'fictional-post-001').content).toContain('meme coin');
+    expect(next.comments.find((comment) => comment.id === 'fictional-comment-001').content).toContain('meme coin');
+    expect(next.posts.find((post) => post.id === 'fictional-post-002').content).toBe('My edited discussion.');
+    expect(next.posts[0].content).toBe('Keep my visitor post.');
+    expect(next.reactions).toBe(state.reactions);
+    expect(next.shares).toBe(state.shares);
+    expect(next.tokens).toBe(state.tokens);
+  });
+
+  it('links fictional discussion to actual source identity once and comments without new claims', () => {
+    const initial = createInitialSocialState();
+    const item = { id: 'real-source-1', headline: 'The publisher-supplied headline', sourceName: 'Example publisher', originalUrl: 'https://example.com/story', category: 'solana', categories: ['crypto', 'solana'] };
+    const discussed = addNewsDiscussion(initial, item);
+    expect(discussed.posts[0]).toMatchObject({ sourceFeedItemId: item.id, sourceUrl: item.originalUrl, sourcePublisher: item.sourceName, isFictional: true, topic: 'solana' });
+    expect(discussed.posts[0].content).toContain(item.headline);
+    expect(addNewsDiscussion(discussed, item)).toBe(discussed);
+    expect(addNewsDiscussion(initial, { ...item, originalUrl: 'javascript:alert(1)' })).toBe(initial);
+    let calls = 0;
+    const commented = runAutonomousActivity(discussed, () => calls++ === 0 ? 0.05 : 0, 'comment');
+    expect(commented.comments.at(-1).postId).toBe(discussed.posts[0].id);
+    expect(commented.comments.at(-1).content).toContain(item.sourceName);
+    expect(commented.comments.at(-1).content).toContain('original solana coverage');
+  });
+
+  it('uses real crypto discoveries for autonomous posts and crypto topics while sources are empty', () => {
+    const initial = createInitialSocialState();
+    const crypto = { id: 'crypto-story', headline: 'An actual supplied story', sourceName: 'Publisher', originalUrl: 'https://example.com/crypto', category: 'crypto', categories: ['crypto'] };
+    const general = { ...crypto, id: 'general-story', category: 'technology', categories: ['technology'] };
+    expect(runAutonomousActivity(initial, () => 0, 'post', [general, crypto]).posts[0].sourceFeedItemId).toBe(crypto.id);
+    const fallback = runAutonomousActivity(initial, () => 0, 'post', []);
+    expect(fallback.posts[0].topic).toBe('meme-coins');
+    expect(fallback.posts[0].sourceUrl).toBeUndefined();
+  });
+
   it('derives persisted community statistics without counting unconfirmed coins', () => {
     const state = createInitialSocialState();
     const stats = getCommunityStats({

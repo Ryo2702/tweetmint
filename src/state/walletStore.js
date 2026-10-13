@@ -3,9 +3,11 @@ import {
   connectWallet,
   disconnectWallet,
   getWalletOptions,
+  signWalletMessage,
   subscribeWalletEvents,
   trySilentConnect,
-  walletError
+  walletError,
+  WalletError
 } from '../services/walletService.js';
 import { fetchSolBalance, fetchSplTokenBalances, SOLANA_NETWORK } from '../services/solanaRpc.js';
 
@@ -171,6 +173,14 @@ export const useWalletStore = create((set, get) => ({
       clearConnection(set, connection.id, 'error', normalized.message);
       return false;
     }
+  },
+
+  signMessage: async (message) => {
+    const connection = activeConnection;
+    if (!connection?.address || get().status !== 'connected' || get().address !== connection.address) throw new WalletError('Connect Phantom or Solflare before signing the ownership message.', 'not-connected');
+    const signature = await signWalletMessage(connection, message);
+    if (activeConnection !== connection || get().status !== 'connected' || get().address !== connection.address) throw new WalletError('The wallet changed while signing. Reconnect and try again.', 'wallet-changed');
+    return signature;
   },
 
   refreshBalance: async () => {

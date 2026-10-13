@@ -10,9 +10,9 @@ const discoverySubscribers = new Set();
 let discoveryStarted = false;
 const CONNECTION_TIMEOUT_MS = 60_000;
 
-function waitForConnection(request, providerName) {
+function waitForWallet(request, providerName, operation = 'connection') {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new WalletError(`${providerName} connection timed out or was interrupted.`, 'timeout')), CONNECTION_TIMEOUT_MS);
+    const timer = setTimeout(() => reject(new WalletError(`${providerName} ${operation} timed out or was interrupted.`, 'timeout')), CONNECTION_TIMEOUT_MS);
     Promise.resolve(request).then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
   });
 }
@@ -170,7 +170,7 @@ export async function connectWallet(id, { silent = false } = {}) {
     } else {
       request = silent ? option.provider.connect({ onlyIfTrusted: true }) : option.provider.connect();
     }
-    const result = await waitForConnection(request, option.name);
+    const result = await waitForWallet(request, option.name);
     return normalizeWalletConnection(option, result);
   } catch (error) {
     throw walletError(error, option.name);
@@ -182,6 +182,36 @@ export async function trySilentConnect(id) {
     return await connectWallet(id, { silent: true });
   } catch {
     return null;
+  }
+}
+
+export async function signWalletMessage(connection, message) {
+  if (!connection?.address) throw new WalletError('Connect Phantom or Solflare before signing the ownership message.', 'not-connected');
+  if (typeof message !== 'string' || !message.trim() || message.length > 10_000) throw new WalletError('The ownership message is invalid.', 'invalid-message');
+  const bytes = new TextEncoder().encode(message);
+  const name = connection.name || 'Wallet';
+  try {
+    let signature;
+    if (connection.kind === 'standard') {
+      const feature = connection.wallet?.features?.['solana:signMessage'];
+      if (!feature?.signMessage || connection.account?.address !== connection.address) throw new WalletError(`${name} cannot sign ownership messages for the connected account.`, 'unsupported');
+      const results = await waitForWallet(feature.signMessage({ account: connection.account, message: bytes.slice() }), name, 'message signing');
+      const result = results?.[0];
+      if (!(result?.signedMessage instanceof Uint8Array) || result.signedMessage.length !== bytes.length ||
+          result.signedMessage.some((byte, index) => byte !== bytes[index])) throw new WalletError(`${name} changed the ownership message. Exact message signing is required.`, 'changed-message');
+      if (result.signatureType && result.signatureType !== 'ed25519') throw new WalletError(`${name} returned an unsupported signature type.`, 'invalid-signature');
+      signature = result.signature;
+    } else {
+      if (typeof connection.provider?.signMessage !== 'function') throw new WalletError(`${name} does not support ownership message signing.`, 'unsupported');
+      const result = await waitForWallet(connection.provider.signMessage(bytes, 'utf8'), name, 'message signing');
+      signature = result?.signature || result;
+    }
+    if (!(signature instanceof Uint8Array) || signature.length !== 64) throw new WalletError(`${name} did not return a valid Ed25519 message signature.`, 'invalid-signature');
+    return btoa(String.fromCharCode(...signature));
+  } catch (error) {
+    if (error instanceof WalletError) throw error;
+    if (String(error?.code) === '4001' || /reject|denied|cancel/i.test(String(error?.message || ''))) throw new WalletError(`${name} message signing was rejected.`, 'user-rejected', error);
+    throw new WalletError(`${name} could not sign the ownership message.`, 'signing-failed', error);
   }
 }
 

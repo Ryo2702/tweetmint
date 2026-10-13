@@ -91,5 +91,8 @@ export async function verifySolanaMint(address, options = {}) {
   if (owner !== TOKEN_PROGRAM_ID) {
     return { confirmed: false, reason: 'not-token-mint', mintAddress, owner };
   }
+  if (account.data?.parsed?.type !== 'mint' || account.data.parsed.info?.isInitialized !== true) {
+    return { confirmed: false, reason: 'not-initialized-mint', mintAddress, owner };
+  }
   return { confirmed: true, mintAddress, owner };
 }

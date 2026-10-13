@@ -15,6 +15,25 @@ const activityBubble = {
   'profile-visited': 'visit',
 };
 const reactionBubble = { laugh: 'haha', heart: '♥', fire: '🔥', rocket: '🚀', shocked: '😮', crying: '😭', skull: '💀' };
+const newsLabels = {
+  crypto: 'New crypto news!',
+  solana: 'New Solana story!',
+  'meme-coins': 'New meme coverage!',
+  trump: 'New Trump story!',
+  viral: 'New internet story!',
+  'famous-people': 'New public figure story!',
+  technology: 'New tech story!',
+};
+
+export function newsActivityBubble(event) {
+  if (event?.type === 'news-read' && event.cached) return 'reading the source';
+  if (event?.type === 'news-read') return Object.hasOwn(newsLabels, event.category) ? newsLabels[event.category] : 'New source story!';
+  if (event?.type === 'news-react') return Object.hasOwn(reactionBubble, event.reactionType) ? reactionBubble[event.reactionType] : event.category === 'viral' ? 'haha' : '♥';
+  if (event?.type === 'news-comment') return 'checking the source';
+  if (event?.type === 'news-share') return '↗ shared source';
+  return '';
+}
+
 const actionFocus = {
   'post-created': [340, 540],
   'comment-created': [340, 540],
@@ -24,6 +43,10 @@ const actionFocus = {
   'browse-coins': [1135, 455],
   archive: [1110, 610],
   'conversation-started': [1080, 240],
+  'news-read': [575, 455],
+  'news-react': [575, 455],
+  'news-comment': [575, 455],
+  'news-share': [575, 455],
 };
 
 const zones = [
@@ -71,6 +94,8 @@ function makeZone(zone) {
   rect(lamp, zone.w - 27, 14, 11, 11, zone.color);
   rect(lamp, zone.w - 24, 17, 5, 5, 0xf8f1d5);
   node.addChild(pad, border, sign, sub, lamp);
+  node.activityLamp = lamp;
+  node.activityText = sub;
   node.position.set(zone.x, zone.y);
   return node;
 }
@@ -112,20 +137,30 @@ function makeCharacter(character, index) {
   bubble.visible = Boolean(bubbleText.text);
   person.addChild(shadow, legs, shirt, head, hair, face, label, bubble);
   person.position.set(character.x, character.y);
-  return { person, bubble, bubbleText, character, phase: index * 0.72, baseX: character.x, baseY: character.y };
+  return { person, legs, bubble, bubbleShape, bubbleText, character, phase: index * 0.72, baseX: character.x, baseY: character.y };
 }
 
-export default function PlazaScene({ characters, activity = [], paused = false, walletConnected = false, onZoneSelect, onCharacterSelect }) {
+export default function PlazaScene({ characters, activity = [], newsActivity = [], paused = false, walletConnected = false, onZoneSelect, onCharacterSelect }) {
   const host = useRef(null);
   const pausedRef = useRef(paused);
   const activityByActorRef = useRef(new Map());
+  const newsSignalRef = useRef(null);
   const callbacks = useRef({ onZoneSelect, onCharacterSelect });
   pausedRef.current = paused;
+  const recentNews = newsActivity
+    .filter((event) => {
+      const age = Date.now() - Date.parse(event?.createdAt);
+      return event?.id && newsActivityBubble(event) && age >= 0 && age < 20_000;
+    })
+    .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+  newsSignalRef.current = recentNews[0] || null;
   activityByActorRef.current = new Map(
-    activity.reduce((entries, event) => {
-      if (event?.actorId && !entries.some(([actorId]) => actorId === event.actorId)) entries.push([event.actorId, event]);
-      return entries;
-    }, []),
+    [...recentNews, ...activity]
+      .reduce((entries, event) => {
+        const actorId = event?.actorId || event?.characterId;
+        if (actorId && !entries.some(([id]) => id === actorId)) entries.push([actorId, event]);
+        return entries;
+      }, []),
   );
   callbacks.current = { onZoneSelect, onCharacterSelect };
 
@@ -168,7 +203,12 @@ export default function PlazaScene({ characters, activity = [], paused = false, 
       const sceneZones = zones.map((zone) => zone.id === 'wallet'
         ? { ...zone, label: walletConnected ? 'WALLET CONNECTED' : zone.label, color: walletConnected ? 0xb7ff3c : zone.color }
         : zone);
-      sceneZones.forEach((zone) => world.addChild(makeZone(zone)));
+      let feedBoard;
+      sceneZones.forEach((zone) => {
+        const node = makeZone(zone);
+        if (zone.id === 'feed') feedBoard = node;
+        world.addChild(node);
+      });
 
       const people = characters.slice(0, 25).map(makeCharacter);
       people.forEach(({ person }) => world.addChild(person));
@@ -189,29 +229,56 @@ export default function PlazaScene({ characters, activity = [], paused = false, 
       app.ticker.add(() => {
         if (pausedRef.current) return;
         const now = performance.now() / 1000;
+        const newsSignal = newsSignalRef.current;
+        if (newsSignal && newsSignal.id !== feedBoard.lastActivityId) {
+          feedBoard.lastActivityId = newsSignal.id;
+          feedBoard.alertUntil = now + 6;
+          feedBoard.activityText.text = newsSignal.type === 'news-read' && !newsSignal.cached ? 'NEW SOURCE STORY' : 'COMMUNITY READING';
+        }
+        const boardActive = now < (feedBoard.alertUntil || 0);
+        feedBoard.activityLamp.alpha = boardActive ? 0.65 + Math.sin(now * 8) * 0.35 : 1;
+        if (!boardActive && feedBoard.activityText.text !== 'CLICK TO ENTER') feedBoard.activityText.text = 'CLICK TO ENTER';
         people.forEach((entry, index) => {
           const speed = 0.75 + (index % 4) * 0.11;
           const event = activityByActorRef.current.get(entry.character.id);
           const eventTime = event ? Date.parse(event.createdAt) : NaN;
-          const isFresh = Number.isFinite(eventTime) && Date.now() - eventTime < 12_000;
+          const isFresh = Number.isFinite(eventTime) && Date.now() - eventTime >= 0 && Date.now() - eventTime < 12_000;
+          const isNews = Boolean(newsActivityBubble(event));
           if (event && event.id !== entry.lastActivityId) {
             entry.lastActivityId = event.id;
-            entry.actionUntil = now + 5;
+            entry.actionUntil = now + (isNews ? 10 : 5);
             entry.actionStarted = now;
           }
           const isActing = Boolean(event && now < (entry.actionUntil || 0));
           const focus = actionFocus[event?.type];
-          const travel = isActing ? Math.sin(Math.min(1, Math.max(0, (now - entry.actionStarted) / 5)) * Math.PI) : 0;
-          const focusX = focus ? Math.max(-42, Math.min(42, focus[0] - entry.baseX)) * travel : 0;
-          const focusY = focus ? Math.max(-30, Math.min(30, focus[1] - entry.baseY)) * travel : 0;
+          const elapsed = now - (entry.actionStarted || 0);
+          const travel = !isActing ? 0 : isNews
+            ? Math.max(0, Math.min(1, elapsed / 3, (10 - elapsed) / 3))
+            : Math.sin(Math.min(1, Math.max(0, elapsed / 5)) * Math.PI);
+          const focusX = !focus ? 0 : isNews
+            ? (focus[0] + (index % 3 - 1) * 22 - entry.baseX) * travel
+            : Math.max(-42, Math.min(42, focus[0] - entry.baseX)) * travel;
+          const focusY = !focus ? 0 : isNews
+            ? (focus[1] + index % 3 * 8 - entry.baseY) * travel
+            : Math.max(-30, Math.min(30, focus[1] - entry.baseY)) * travel;
           entry.person.y = entry.baseY + Math.sin(now * speed + entry.phase) * 2 + focusY;
           entry.person.x = entry.baseX + Math.cos(now * speed * 0.56 + entry.phase) * 3 + focusX;
           entry.person.scale.y = isActing && event.type === 'post-created' ? 0.86 : 1;
+          entry.legs.x = isNews && isActing && travel < 1 ? Math.sin(now * 12 + entry.phase) * 2 : 0;
+          entry.person.rotation = isNews && isActing && event.type === 'news-read' && travel === 1 ? Math.sin(now * 2) * 0.035 : 0;
           const actionText = event && (isFresh || now < (entry.actionUntil || 0))
-            ? event.type === 'reaction-added' ? reactionBubble[event.reactionType] || '♥' : activityBubble[event.type]
+            ? isNews && event.type === 'news-read' && elapsed >= 3 && elapsed < 7
+              ? 'reading the source'
+              : newsActivityBubble(event) || (event.type === 'reaction-added' ? reactionBubble[event.reactionType] || '♥' : activityBubble[event.type])
             : '';
           const nextBubbleText = actionText || (index % 5 === 0 ? 'typing...' : index % 4 === 0 ? 'haha' : '');
-          if (entry.bubbleText.text !== nextBubbleText) entry.bubbleText.text = nextBubbleText;
+          if (entry.bubbleText.text !== nextBubbleText) {
+            entry.bubbleText.text = nextBubbleText;
+            const width = Math.max(48, entry.bubbleText.width + 12);
+            entry.bubbleShape.clear();
+            rect(entry.bubbleShape, -width / 2, -43, width, 17, 0xf6f1d4);
+            rect(entry.bubbleShape, -3, -28, 6, 4, 0xf6f1d4);
+          }
           entry.bubble.visible = Boolean(actionText) || (index % 7 === Math.floor(now / 3) % 7 && Boolean(entry.bubbleText.text));
         });
       });
@@ -246,7 +313,7 @@ export default function PlazaScene({ characters, activity = [], paused = false, 
         <button type="button" onClick={() => host.current?._tweetmintZoom?.(-0.12)} aria-label="Zoom out">−</button>
         <button type="button" onClick={() => host.current?._tweetmintReset?.()} aria-label="Reset world view">◎</button>
       </div>
-      <p className="scene-hint">USE CONTROLS TO ZOOM · CLICK A PLACE OR PERSON</p>
+      <p className="scene-hint">FICTIONAL CHARACTERS · CLICK A PLACE OR PERSON · USE CONTROLS TO ZOOM</p>
     </div>
   );
 }

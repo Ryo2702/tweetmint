@@ -4,6 +4,10 @@ import {
   TRENDING_FILTERS,
   createEmptyReactionCounts,
   createInitialSocialState,
+  CRYPTO_COMMUNITY_TOPICS,
+  fictionalPosts,
+  fictionalComments,
+  legacyCommunityText,
 } from '../data/community.js';
 
 export {
@@ -11,6 +15,35 @@ export {
   REACTION_TYPES,
   TRENDING_FILTERS,
   createInitialSocialState,
+};
+
+export const refreshCommunityTopics = (state) => {
+  const postsById = new Map(fictionalPosts.map((post) => [post.id, post]));
+  const commentsById = new Map(fictionalComments.map((comment) => [comment.id, comment]));
+  const posts = (state.posts || []).map((post) => {
+    if (!post.isFictional || post.editedAt) return post;
+    const seed = postsById.get(post.id);
+    if (seed && seed.authorId === post.authorId && legacyCommunityText.get(post.id) === post.content) return { ...post, content: seed.content, topic: seed.topic, subject: seed.subject };
+    const actorIndex = state.characters.findIndex((actor) => actor.id === post.authorId);
+    const actor = state.characters[actorIndex];
+    if (!actor || post.content !== `${actor.personality || 'A thought crossed my mind'} · ${actor.interests?.[0] || 'the plaza'} is worth another look today.`) return post;
+    const template = CRYPTO_COMMUNITY_TOPICS[actorIndex % CRYPTO_COMMUNITY_TOPICS.length];
+    return { ...post, content: template.content, topic: template.topic, subject: template.subject };
+  });
+  return {
+    ...state,
+    posts,
+    comments: (state.comments || []).map((comment) => {
+      if (!comment.isFictional || comment.editedAt) return comment;
+      const seed = commentsById.get(comment.id);
+      if (seed && seed.authorId === comment.authorId && seed.postId === comment.postId && legacyCommunityText.get(comment.id) === comment.content) return { ...comment, content: seed.content };
+      const actor = state.characters.find((character) => character.id === comment.authorId);
+      const oldPost = state.posts.find((post) => post.id === comment.postId);
+      const oldTopic = oldPost?.topic || oldPost?.subject || 'this idea';
+      if (!actor || comment.content !== `${actor.personality || 'I like this'} — the ${oldTopic} detail is exactly what caught my eye.`) return comment;
+      return { ...comment, content: autonomousComment(actor, posts.find((post) => post.id === comment.postId) || {}) };
+    }),
+  };
 };
 
 const MAX_POST_LENGTH = 500;
@@ -232,6 +265,7 @@ export const createPost = (state, input = {}) => {
     isLocalOnly: true,
     identityLabel: isFictional ? 'Fictional community post' : 'Local demo post',
     media: Array.isArray(input.media) ? input.media.slice() : [],
+    ...(input.sourceUrl ? { sourceUrl: input.sourceUrl, sourceFeedItemId: input.sourceFeedItemId, sourcePublisher: input.sourcePublisher, headline: input.headline } : {}),
     relatedTokenId: null,
     reactionCounts: createEmptyReactionCounts(),
     commentCount: 0,
@@ -284,18 +318,32 @@ const chooseCharacter = (characters, random) => {
   }) || characters[0];
 };
 
-const autonomousPost = (character) => {
-  const topic = character.interests?.[0] || 'the plaza';
-  const personality = character.personality || 'A thought crossed my mind';
-  return `${personality} · ${topic} is worth another look today.`;
-};
-
 const autonomousComment = (character, post) => {
-  const topic = post.topic || post.subject || 'this idea';
-  return `${character.personality || 'I like this'} — the ${topic} detail is exactly what caught my eye.`;
+  if (post.sourceUrl) return `I’m reading ${post.sourcePublisher || 'the publisher'}’s original ${post.topic || 'news'} coverage before drawing conclusions. What context should we check?`.slice(0, MAX_COMMENT_LENGTH);
+  const template = CRYPTO_COMMUNITY_TOPICS.find((item) => item.topic === post.topic) || CRYPTO_COMMUNITY_TOPICS[2];
+  const index = (character.reactionPreferences?.length || 1) % template.comments.length;
+  return template.comments[index];
 };
 
-export const runAutonomousActivity = (state, random = Math.random, requestedAction = null) => {
+export const addNewsDiscussion = (state, item, actorId = state.characters?.[0]?.id) => {
+  if (!item?.id || typeof item.headline !== 'string' || !item.headline.trim() || typeof item.sourceName !== 'string' || !item.sourceName.trim() || !state.characters?.some((actor) => actor.id === actorId)) return state;
+  if (state.posts.some((post) => post.sourceFeedItemId === item.id)) return state;
+  let url;
+  try { url = new URL(item.originalUrl || item.canonicalUrl); } catch { return state; }
+  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return state;
+  return createPost(state, {
+    authorId: actorId,
+    content: `I’m reading ${item.sourceName.slice(0, 80)}’s coverage: “${item.headline.slice(0, 300)}”. What context should we check in the original source?`,
+    topic: item.category || 'news',
+    subject: 'published source discussion',
+    sourceUrl: url.href,
+    sourceFeedItemId: item.id,
+    sourcePublisher: item.sourceName,
+    headline: item.headline,
+  });
+};
+
+export const runAutonomousActivity = (state, random = Math.random, requestedAction = null, newsItems = []) => {
   const characters = state.characters || [];
   if (!characters.length) return state;
   const actor = chooseCharacter(characters, random);
@@ -304,11 +352,19 @@ export const runAutonomousActivity = (state, random = Math.random, requestedActi
     : randomItem(['react', 'react', 'comment', 'reply', 'share', 'post', 'read', 'browse-trending', 'browse-coins', 'talk', 'visit'], random);
 
   if (action === 'post') {
+    const available = newsItems.filter((item) => !state.posts.some((post) => post.sourceFeedItemId === item.id));
+    const cryptoItems = available.filter((item) => item.categories?.some((category) => ['crypto', 'solana', 'meme-coins'].includes(category)));
+    const news = randomItem(cryptoItems.length ? cryptoItems : available, random);
+    if (news) {
+      const next = addNewsDiscussion(state, news, actor.id);
+      if (next !== state) return next;
+    }
+    const template = randomItem(CRYPTO_COMMUNITY_TOPICS, random);
     return createPost(state, {
       authorId: actor.id,
-      content: autonomousPost(actor),
-      topic: actor.interests?.[0] || 'community',
-      subject: actor.personality || 'a plaza thought',
+      content: template.content,
+      topic: template.topic,
+      subject: template.subject,
     });
   }
 
