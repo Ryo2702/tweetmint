@@ -4,24 +4,19 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "node server/dev.js",
-    "dev:client": "vite",
-    "dev:server": "node --env-file-if-exists=.env server/index.js",
-    "start": "node --env-file-if-exists=.env server/index.js",
+    "dev": "vite",
+    "start": "vite preview",
     "build": "vite build",
     "test": "vitest run"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.66.8",
     "@vitejs/plugin-react": "^4.4.1",
-    "fast-xml-parser": "^5.11.2",
     "gsap": "^3.12.7",
     "lucide-react": "^0.475.0",
     "motion": "^12.4.7",
     "pixi.js": "^8.8.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "ws": "^8.22.0",
     "zustand": "^5.0.3"
   },
   "devDependencies": {

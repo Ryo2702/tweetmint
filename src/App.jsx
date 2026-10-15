@@ -14,7 +14,6 @@ import {
   RefreshCw,
   Search,
   Send,
-  ShieldCheck,
   Sparkles,
   TerminalSquare,
   Upload,
@@ -22,28 +21,22 @@ import {
   Wallet,
   XCircle
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import PixelWindow from './components/PixelWindow.jsx';
 import Avatar from './components/Avatar.jsx';
 import PostCard from './components/PostCard.jsx';
 import PostScreenshot from './components/PostScreenshot.jsx';
 import PlazaScene from './world/PlazaScene.jsx';
 import NewsFeed, { NewsStats, NewsAnnouncements, NewsHistory, NewsDetail } from './components/NewsFeed.jsx';
-import { useNewsFeed, useNewsLive } from './state/newsFeed.js';
 import { createFeedLaunchSource } from './services/feedLaunch.js';
 import { usePlazaUi } from './state/uiStore.js';
-import { useWalletStore } from './state/walletStore.js';
 import { parseXPostUrl } from './state/xUrl.js';
-import { WALLET_PROVIDERS, subscribeWalletDiscovery, walletDisplayName } from './services/walletService.js';
-import { getExplorerUrl, networkLabel, SOLANA_NETWORK } from './services/solanaRpc.js';
-import { buildPumpFunCoinUrl, buildPumpFunLaunchDraft, buildPumpFunLaunchUrl, normalizeTicker } from './services/pumpFun.js';
+import { buildPumpFunLaunchDraft, buildPumpFunLaunchUrl, normalizeTicker } from './services/pumpFun.js';
 import { createPostScreenshotAsset, createScreenshotFailure, createUploadedScreenshotAsset, isScreenshotReady, rasterizeScreenshotAsset } from './services/postScreenshot.js';
 import {
   REACTION_TYPES,
   TRENDING_FILTERS,
   addComment,
-  addNewsDiscussion,
-  confirmTokenLaunch,
   createInitialSocialState,
   createPost,
   getSourcePostRecord,
@@ -199,43 +192,11 @@ export default function App() {
   const [selectedTokenId, setSelectedTokenId] = useState(null);
   const [toasts, setToasts] = useState([]);
   const [autonomyPaused, setAutonomyPaused] = useState(false);
-  const [newsActivity, setNewsActivity] = useState([]);
+  const [newsActivity] = useState([]);
   const [newsCategory, setNewsCategory] = useState('for-you');
   const [newsFeedOpen, setNewsFeedOpen] = useState(true);
   const [newsItemId, setNewsItemId] = useState(null);
-  const latestNews = useNewsFeed('latest');
-  const newsItemsRef = useRef([]);
-  newsItemsRef.current = latestNews.data?.pages.flatMap((page) => page.items || []) || [];
   const { panel, selectedPostId, selectedCharacterId, openPanel, closePanel } = usePlazaUi();
-  const walletState = useWalletStore();
-  const wallet = walletState.address ? { provider: walletDisplayName(walletState.selectedProvider), address: walletState.address } : null;
-  const receiveNewsActivity = useCallback((activity) => {
-    if (activity) setNewsActivity((items) => [{ ...activity, id: activity.id || `news-${Date.now()}-${Math.random()}` }, ...items].slice(0, 30));
-    if (activity?.type === 'news-read' && /^[a-f0-9]{24}$/.test(activity.itemId || '')) {
-      const item = newsItemsRef.current.find((entry) => entry.id === activity.itemId);
-      if (item) setSocial((state) => addNewsDiscussion(state, item));
-      else fetch(`/api/feed/${activity.itemId}`).then((response) => response.ok ? response.json() : null)
-        .then((record) => { if (record?.item) setSocial((state) => addNewsDiscussion(state, record.item)); })
-        .catch(() => {});
-    }
-  }, []);
-  const newsConnection = useNewsLive(receiveNewsActivity);
-
-  const latestNewsItem = newsItemsRef.current[0];
-  useEffect(() => {
-    if (latestNewsItem) setSocial((state) => addNewsDiscussion(state, latestNewsItem));
-  }, [latestNewsItem]);
-
-  useEffect(() => {
-    const onDiscovery = () => {
-      const store = useWalletStore.getState();
-      store.discover();
-      if (store.status === 'disconnected') store.restore();
-    };
-    const unsubscribe = subscribeWalletDiscovery(onDiscovery);
-    return unsubscribe;
-  }, []);
-
   useEffect(() => {
     try { window.localStorage.setItem(STORAGE_KEY, shallowState(social)); } catch { /* local persistence is best-effort only */ }
   }, [social]);
@@ -266,7 +227,7 @@ export default function App() {
       const timer = window.setTimeout(() => {
         timers.delete(timer);
         if (stopped) return;
-        setSocial((state) => runAutonomousActivity(state, Math.random, action, newsItemsRef.current));
+        setSocial((state) => runAutonomousActivity(state, Math.random, action, []));
         schedule(action, minimum, maximum);
       }, minimum + Math.random() * (maximum - minimum));
       timers.add(timer);
@@ -594,28 +555,12 @@ export default function App() {
       openToken(existing.id);
       return;
     }
-    if (!walletState.address) {
-      setLaunchStatus('awaiting wallet');
-      setSocial((state) => upsertSourcePostRecord(state, {
-        ...mintScreenshot,
-        sourcePostId: mintSource.postId,
-        sourcePostUrl: mintSource.canonicalUrl,
-        tokenTicker: ticker,
-        launchStatus: 'awaiting wallet',
-        launchPlatform: 'pump.fun',
-        preview: mintPreview
-      }));
-      notify('Connect Phantom or Solflare before opening the pump.fun launch.', 'error');
-      openPanel('wallet');
-      return;
-    }
     const draft = buildPumpFunLaunchDraft({
       source: mintSource,
       screenshot: mintScreenshot,
       ticker,
       name: mintTokenName || `${ticker} Coin`,
-      walletAddress: walletState.address,
-      network: walletState.network || SOLANA_NETWORK
+      network: 'mainnet-beta'
     });
     setLaunchDraft(draft);
     setLaunchStatus('preparing');
@@ -628,112 +573,6 @@ export default function App() {
       launchPlatform: 'pump.fun',
       preview: mintPreview
     }));
-  };
-
-  const openPumpFunLaunch = () => {
-    if (!launchDraft) return prepareLaunch();
-    if (!rightsConfirmed || !walletState.address || walletState.address !== launchDraft.creatorWallet) return notify('Confirm image rights and reconnect the wallet used for this proposal.', 'error');
-    if ((walletState.network || SOLANA_NETWORK) !== 'mainnet-beta') return notify('The pump.fun website launch requires a mainnet wallet.', 'error');
-    setLaunchStatus('submitting to pump.fun');
-    window.open(buildPumpFunLaunchUrl(), '_blank', 'noopener,noreferrer');
-    setLaunchStatus('pending confirmation');
-    setSocial((state) => upsertSourcePostRecord(state, {
-      ...mintScreenshot,
-      sourcePostId: mintSource.postId,
-      sourcePostUrl: mintSource.canonicalUrl,
-      tokenTicker: launchDraft.ticker,
-      launchStatus: 'pending confirmation',
-      launchPlatform: 'pump.fun',
-      creatorWallet: walletState.address,
-      launchDraft,
-      preview: mintPreview
-    }));
-    notify('Pump.fun opened. Approve the launch there, then paste the returned mint to verify it.');
-  };
-
-  const verifyLaunch = async () => {
-    if (!launchDraft || !mintAddress.trim() || !launchSignature.trim()) return notify('Paste the mint address and creation transaction signature returned by pump.fun.', 'error');
-    if (!rightsConfirmed || !walletState.address || walletState.address !== launchDraft.creatorWallet) return notify('Confirm image rights and reconnect the proposal wallet before verifying.', 'error');
-    setLaunchStatus('pending confirmation');
-    try {
-      await fetch('/api/feed/session', { credentials: 'same-origin' });
-      const proposal = { itemId: mintSource.feedItemId || null, sourceId: mintSource.postId, sourceUrl: mintSource.canonicalUrl, sourceType: mintSource.sourceType || 'x', mintAddress: mintAddress.trim(), creatorWallet: walletState.address, signature: launchSignature.trim(), ticker: launchDraft.ticker, name: launchDraft.name, network: walletState.network || SOLANA_NETWORK, preparedAt: launchDraft.preparedAt };
-      const challengeResponse = await fetch('/api/coins/challenge', {
-        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(proposal)
-      });
-      const challenge = await challengeResponse.json();
-      if (!challengeResponse.ok || !challenge.message) throw new Error(challenge.error || 'Unable to prepare wallet ownership verification.');
-      const walletSignature = await walletState.signMessage(challenge.message);
-      const response = await fetch('/api/coins/verify', {
-        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...proposal, challengeId: challenge.challengeId, walletSignature })
-      });
-      const proof = await response.json();
-      if (!response.ok || !proof.verified) throw new Error(proof.error || 'The server could not verify the wallet-signed pump.fun creation transaction.');
-      const confirmedAt = proof.confirmedAt;
-      const token = {
-        id: `tweetmint-coin-${mintSource.postId}`,
-        name: launchDraft.name,
-        ticker: launchDraft.ticker,
-        sourcePostId: mintSource.postId,
-        sourcePostUrl: mintSource.canonicalUrl,
-        sourceType: mintSource.sourceType || 'x',
-        sourceContentId: mintSource.sourceContentId || mintSource.postId,
-        feedItemId: mintSource.feedItemId || null,
-        signature: proof.signature,
-        mintAddress: proof.mintAddress,
-        creatorWallet: launchDraft.creatorWallet,
-        launchPlatform: 'pump.fun',
-        launchStatus: 'launched',
-        launchTimestamp: confirmedAt,
-        network: walletState.network || SOLANA_NETWORK,
-        pumpFunUrl: buildPumpFunCoinUrl(proof.mintAddress),
-        explorerUrl: getExplorerUrl(proof.mintAddress, walletState.network || SOLANA_NETWORK),
-        screenshotAssetId: mintScreenshot.screenshotAssetId
-      };
-      setSocial((state) => confirmTokenLaunch(state, { token, confirmedAt }));
-      setLaunchStatus('launched');
-      setMintAddress(proof.mintAddress);
-      notify(`$${token.ticker} verified on Solana and saved as the canonical coin.`);
-      openToken(token.id);
-    } catch (error) {
-      setLaunchStatus('failed');
-      setSocial((state) => upsertSourcePostRecord(state, {
-        ...mintScreenshot,
-        sourcePostId: mintSource.postId,
-        sourcePostUrl: mintSource.canonicalUrl,
-        tokenTicker: launchDraft.ticker,
-        launchStatus: 'failed',
-        launchPlatform: 'pump.fun',
-        creatorWallet: launchDraft.creatorWallet,
-        launchDraft,
-        preview: mintPreview
-      }));
-      notify(error.message || 'Solana mint verification failed.', 'error');
-    }
-  };
-
-  const connectWallet = async (provider) => {
-    const connection = await walletState.connect(provider);
-    if (connection) {
-      if (launchStatus === 'awaiting wallet') setLaunchStatus('preparing');
-      notify(`${connection.name} connected. Your Solana account is ready.`);
-    }
-    else if (useWalletStore.getState().connectionError) notify(useWalletStore.getState().connectionError, 'error');
-  };
-
-  const disconnectWallet = async () => {
-    const disconnected = await walletState.disconnect();
-    notify(disconnected ? 'Wallet disconnected from this browser.' : 'Wallet disconnect failed.', disconnected ? 'success' : 'error');
-  };
-
-  const copyWalletAddress = async (address) => {
-    try {
-      await navigator.clipboard.writeText(address);
-      notify('Full wallet address copied.');
-    } catch {
-      notify('Copy failed in this browser.', 'error');
-    }
   };
 
   const copyText = async (value, message = 'Copied.') => {
@@ -788,16 +627,12 @@ export default function App() {
           {nav.map(([id, label]) => <button className={`nav-button ${panel === id ? 'is-active' : ''}`} type="button" key={id} onClick={() => navigatePanel(id)}>{label}</button>)}
         </nav>
         <span className="topbar-spacer" />
-        {wallet ? (
-          <button className="top-action" type="button" onClick={() => openPanel('wallet')}><span className="wallet-connected-dot" aria-hidden="true" /> <Wallet size={14} /> {wallet.provider} {wallet.address.slice(0, 4)}…{wallet.address.slice(-4)}</button>
-        ) : (
-          <button className="top-action" type="button" onClick={() => openPanel('wallet')}><Wallet size={14} /> Connect wallet</button>
-        )}
+        <button className="top-action" type="button" onClick={() => openPanel('wallet')}><Wallet size={14} /> Wallet links</button>
       </header>
 
       <section className="world-page">
         <section className="plaza-stage" aria-label="TweetMint Social Plaza">
-          <PlazaScene characters={sceneCharacters} activity={social.activity} newsActivity={newsActivity} paused={autonomyPaused} walletConnected={Boolean(walletState.address)} onZoneSelect={openZone} onCharacterSelect={showCharacter} />
+          <PlazaScene characters={sceneCharacters} activity={social.activity} newsActivity={newsActivity} paused={autonomyPaused} walletConnected={false} onZoneSelect={openZone} onCharacterSelect={showCharacter} />
 
           <div className="world-banner" aria-hidden="true">
             <p>THE SOCIAL PLAZA</p>
@@ -805,7 +640,7 @@ export default function App() {
           </div>
 
           <NewsStats onFilter={filterNews} />
-          {newsFeedOpen && <NewsFeed embedded key={newsCategory} initialCategory={newsCategory} onMakeCoin={makeNewsCoin} connection={newsConnection} onClose={() => setNewsFeedOpen(false)} onOpenHistory={() => openPanel('news-history')} />}
+          {newsFeedOpen && <NewsFeed embedded key={newsCategory} initialCategory={newsCategory} onMakeCoin={makeNewsCoin} onClose={() => setNewsFeedOpen(false)} onOpenHistory={() => openPanel('news-history')} />}
           <NewsAnnouncements onOpen={openNews} onHistory={() => openPanel('news-history')} />
           <div className="community-announcements"><AnnouncementStack announcements={(social.announcements || []).filter((item) => ['coin-launch', 'coin-milestone'].includes(item.type))} sourcePosts={social.sourcePosts || []} onOpen={showPost} onToken={openToken} onHistory={() => openPanel('announcements')} /></div>
 
@@ -843,13 +678,13 @@ export default function App() {
                 {panel === 'news-history' && <NewsHistory onOpen={openNews} onClose={closePanel} />}
                 {panel === 'detail' && selectedPost && <DetailWindow post={postForDisplay(selectedPost)} getAuthor={actorFor} social={social} currentUser={currentUser} commentText={commentText} setCommentText={setCommentText} replyingTo={replyingTo} setReplyingTo={setReplyingTo} onComment={submitComment} onReact={reactTo} onReactComment={reactToComment} onShare={share} onClose={closePanel} />}
                 {panel === 'profile' && selectedCharacter && <ProfileWindow character={selectedCharacter} posts={social.posts} getAuthor={actorFor} onOpen={showPost} onClose={closePanel} />}
-                {panel === 'mint' && <MintWindow status={mintStatus} statusMessage={mintStatusMessages[mintStatus]} launchStatus={launchStatus} source={mintSource} sourceRecord={mintRecord} preview={mintPreview} screenshot={mintScreenshot} caption={mintCaption} onCaptionChange={updateMintCaption} onUploadImage={uploadMintImage} ticker={mintTicker} setTicker={setMintTicker} tokenName={mintTokenName} setTokenName={setMintTokenName} mintAddress={mintAddress} setMintAddress={setMintAddress} launchSignature={launchSignature} setLaunchSignature={setLaunchSignature} rightsConfirmed={rightsConfirmed} setRightsConfirmed={setRightsConfirmed} sourceUrl={mintUrl} setSourceUrl={updateMintUrl} launchDraft={launchDraft} duplicate={duplicateToken} onClear={() => updateMintUrl('')} onCheck={checkMintUrl} onRecapture={recaptureScreenshot} onViewScreenshot={viewScreenshot} onContinue={prepareLaunch} onOpenPumpFun={openPumpFunLaunch} onVerifyLaunch={verifyLaunch} onViewExisting={openToken} onClose={closePanel} onHowItWorks={() => openPanel('how')} wallet={wallet} network={walletState.network || SOLANA_NETWORK} />}
+                {panel === 'mint' && <MintWindow status={mintStatus} statusMessage={mintStatusMessages[mintStatus]} launchStatus={launchStatus} source={mintSource} sourceRecord={mintRecord} preview={mintPreview} screenshot={mintScreenshot} caption={mintCaption} onCaptionChange={updateMintCaption} onUploadImage={uploadMintImage} ticker={mintTicker} setTicker={setMintTicker} tokenName={mintTokenName} setTokenName={setMintTokenName} mintAddress={mintAddress} setMintAddress={setMintAddress} launchSignature={launchSignature} setLaunchSignature={setLaunchSignature} rightsConfirmed={rightsConfirmed} setRightsConfirmed={setRightsConfirmed} sourceUrl={mintUrl} setSourceUrl={updateMintUrl} launchDraft={launchDraft} duplicate={duplicateToken} onClear={() => updateMintUrl('')} onCheck={checkMintUrl} onRecapture={recaptureScreenshot} onViewScreenshot={viewScreenshot} onContinue={prepareLaunch} onViewExisting={openToken} onClose={closePanel} onHowItWorks={() => openPanel('how')} />}
                 {panel === 'tokens' && <TokensWindow tokens={social.tokens} posts={social.posts} sourcePosts={social.sourcePosts || []} onOpen={showPost} onOpenToken={openToken} onClose={closePanel} />}
                 {panel === 'token-detail' && selectedToken && <TokenDetailWindow token={selectedToken} source={selectedTokenSource} post={selectedTokenPost ? postForDisplay(selectedTokenPost) : null} getAuthor={actorFor} onOpenPost={showPost} onReact={reactTo} onSharePost={share} onViewScreenshot={() => viewScreenshot(selectedTokenSource)} onShare={shareCoin} onCopy={copyText} onClose={closePanel} />}
                 {panel === 'announcements' && <AnnouncementsWindow announcements={social.announcementHistory || []} sourcePosts={social.sourcePosts || []} onOpen={showPost} onToken={openToken} onClose={closePanel} />}
                 {panel === 'archive' && <ArchiveWindow sourcePosts={social.sourcePosts || []} tokens={social.tokens} onOpenToken={openToken} onClose={closePanel} />}
                 {panel === 'how' && <HowItWorksWindow onLaunch={() => openPanel('mint')} onClose={closePanel} />}
-                {panel === 'wallet' && <WalletWindow wallet={wallet} walletState={walletState} onConnect={connectWallet} onDisconnect={disconnectWallet} onRefresh={() => walletState.refreshBalance()} onCopy={copyWalletAddress} onClose={closePanel} />}
+                {panel === 'wallet' && <WalletWindow onClose={closePanel} />}
               </motion.div>
             )}
           </AnimatePresence>
@@ -879,13 +714,13 @@ function AnnouncementsWindow({ announcements, sourcePosts, onOpen, onToken, onCl
 }
 
 function ComposerWindow({ text, setText, onPublish, onClose }) {
-  return <div className="floating-window composer-window"><PixelWindow eyebrow="POST TERMINAL" title="Compose for the plaza" onClose={onClose}><div className="window-body"><p className="panel-note"><TerminalSquare />Posting is open to everyone. A wallet is only needed when you choose a pump.fun launch.</p><textarea className="composer-textarea" value={text} maxLength="500" placeholder="What is happening in the plaza?" onChange={(event) => setText(event.target.value)} /><div className="composer-footer"><span className="counter">{text.length}/500</span><button className="pixel-button primary" type="button" onClick={onPublish}><Send /> Publish post</button></div></div></PixelWindow></div>;
+  return <div className="floating-window composer-window"><PixelWindow eyebrow="POST TERMINAL" title="Compose for the plaza" onClose={onClose}><div className="window-body"><p className="panel-note"><TerminalSquare />Posting is open to everyone. Connect your wallet on pump.fun when launching.</p><textarea className="composer-textarea" value={text} maxLength="500" placeholder="What is happening in the plaza?" onChange={(event) => setText(event.target.value)} /><div className="composer-footer"><span className="counter">{text.length}/500</span><button className="pixel-button primary" type="button" onClick={onPublish}><Send /> Publish post</button></div></div></PixelWindow></div>;
 }
 
 function FeedWindow({ posts, filter, setFilter, panel, getAuthor, sourcePosts, tokens, onOpen, onOpenToken, onReact, onShare, onClose }) {
   const title = panel === 'community' ? 'Social Lounge' : panel === 'trending' ? 'Trending Wall' : 'Community Feed';
   const preserved = sourcePosts.filter((record) => record.screenshotStatus === 'ready').slice(0, 4);
-  return <div className="floating-window feed-window"><PixelWindow eyebrow={panel === 'trending' ? 'TRENDING WALL' : 'COMMUNITY FEED BOARD'} title={title} onClose={onClose}><div className="window-body compact"><p className="panel-note">Fictional pixel characters and visitor posts in this browser. This community activity is separate from the real news feed.</p><div className="feed-toolbar">{TRENDING_FILTERS.map((item) => <button key={item} type="button" className={`filter-button ${filter === item ? 'is-active' : ''}`} onClick={() => setFilter(item)}>{prettify(item)}</button>)}</div>{preserved.length > 0 && <section className="preserved-feed" aria-label="Recently minted preserved posts"><header><span>✦ PRESERVED POST WALL</span><small>SCREENSHOT → COIN</small></header>{preserved.map((record) => { const token = tokens.find((item) => String(item.sourcePostId) === String(record.sourcePostId)); return <button className="preserved-feed-card" type="button" key={record.screenshotAssetId} onClick={() => token ? onOpenToken(token.id) : undefined}><PostScreenshot asset={record} variant="thumb" alt="Preserved source post thumbnail" /><span><strong>{token ? `$${token.ticker}` : 'SOURCE POST'}</strong><small>{record.sourceAuthorUsername ? `@${record.sourceAuthorUsername}` : 'Author unavailable'} · {record.launchStatus || 'captured'}</small></span></button>; })}</section>}{posts.map((post) => <PostCard key={post.id} post={post} author={getAuthor(post.authorId)} onOpen={onOpen} onReact={onReact} onShare={onShare} />)}</div></PixelWindow></div>;
+  return <div className="floating-window feed-window"><PixelWindow eyebrow={panel === 'trending' ? 'TRENDING WALL' : 'COMMUNITY FEED BOARD'} title={title} onClose={onClose}><div className="window-body compact"><p className="panel-note">Fictional pixel characters and visitor posts in this browser. This community activity is separate from the external source links.</p><div className="feed-toolbar">{TRENDING_FILTERS.map((item) => <button key={item} type="button" className={`filter-button ${filter === item ? 'is-active' : ''}`} onClick={() => setFilter(item)}>{prettify(item)}</button>)}</div>{preserved.length > 0 && <section className="preserved-feed" aria-label="Recently minted preserved posts"><header><span>✦ PRESERVED POST WALL</span><small>SCREENSHOT → COIN</small></header>{preserved.map((record) => { const token = tokens.find((item) => String(item.sourcePostId) === String(record.sourcePostId)); return <button className="preserved-feed-card" type="button" key={record.screenshotAssetId} onClick={() => token ? onOpenToken(token.id) : undefined}><PostScreenshot asset={record} variant="thumb" alt="Preserved source post thumbnail" /><span><strong>{token ? `$${token.ticker}` : 'SOURCE POST'}</strong><small>{record.sourceAuthorUsername ? `@${record.sourceAuthorUsername}` : 'Author unavailable'} · {record.launchStatus || 'captured'}</small></span></button>; })}</section>}{posts.map((post) => <PostCard key={post.id} post={post} author={getAuthor(post.authorId)} onOpen={onOpen} onReact={onReact} onShare={onShare} />)}</div></PixelWindow></div>;
 }
 
 function DetailWindow({ post, getAuthor, social, currentUser, commentText, setCommentText, replyingTo, setReplyingTo, onComment, onReact, onReactComment, onShare, onClose }) {
@@ -904,16 +739,16 @@ function CommentThread({ comment, replies, getAuthor, currentUser, social, onRep
 
 function ProfileWindow({ character, posts, onOpen, onClose }) {
   const authored = posts.filter((post) => post.authorId === character.id);
-  return <div className="floating-window profile-window"><PixelWindow eyebrow="PLAZA MEMBER" title="Profile station" onClose={onClose}><div className="profile-hero"><Avatar character={character} size={52} /><div><h2 className="profile-name">{character.displayName}</h2><div className="profile-handle">{character.username}</div><p className="profile-bio">{character.isFictional ? `${character.personality}. Into ${(character.interests || []).join(', ')}.` : 'Posts are kept in this browser until a server is configured.'}</p></div></div><div className="profile-stats"><div className="profile-stat"><strong>{authored.length}</strong><span>posts</span></div><div className="profile-stat"><strong>{character.isFictional ? 'MEMBER' : 'VISITOR'}</strong><span>identity</span></div><div className="profile-stat"><strong>—</strong><span>followers</span></div></div><div className="window-body compact">{authored.slice(0, 4).map((post) => <button key={post.id} className="mini-action" type="button" onClick={() => onOpen(post)}>Open: {post.content.slice(0, 42)}…</button>)}</div></PixelWindow></div>;
+  return <div className="floating-window profile-window"><PixelWindow eyebrow="PLAZA MEMBER" title="Profile station" onClose={onClose}><div className="profile-hero"><Avatar character={character} size={52} /><div><h2 className="profile-name">{character.displayName}</h2><div className="profile-handle">{character.username}</div><p className="profile-bio">{character.isFictional ? `${character.personality}. Into ${(character.interests || []).join(', ')}.` : 'Posts are kept in this browser on this device.'}</p></div></div><div className="profile-stats"><div className="profile-stat"><strong>{authored.length}</strong><span>posts</span></div><div className="profile-stat"><strong>{character.isFictional ? 'MEMBER' : 'VISITOR'}</strong><span>identity</span></div><div className="profile-stat"><strong>—</strong><span>followers</span></div></div><div className="window-body compact">{authored.slice(0, 4).map((post) => <button key={post.id} className="mini-action" type="button" onClick={() => onOpen(post)}>Open: {post.content.slice(0, 42)}…</button>)}</div></PixelWindow></div>;
 }
 
-function MintWindow({ status, statusMessage, launchStatus, source, sourceRecord, preview, screenshot, caption, onCaptionChange, onUploadImage, ticker, setTicker, tokenName, setTokenName, mintAddress, setMintAddress, launchSignature, setLaunchSignature, rightsConfirmed, setRightsConfirmed, sourceUrl, setSourceUrl, launchDraft, duplicate, onClear, onCheck, onRecapture, onViewScreenshot, onContinue, onOpenPumpFun, onVerifyLaunch, onViewExisting, onClose, onHowItWorks, wallet, network }) {
+function MintWindow({ status, statusMessage, launchStatus, source, sourceRecord, preview, screenshot, caption, onCaptionChange, onUploadImage, ticker, setTicker, tokenName, setTokenName, mintAddress, setMintAddress, launchSignature, setLaunchSignature, rightsConfirmed, setRightsConfirmed, sourceUrl, setSourceUrl, launchDraft, duplicate, onClear, onCheck, onRecapture, onViewScreenshot, onContinue, onViewExisting, onClose, onHowItWorks }) {
   const previewData = preview?.data || preview;
   const author = previewData?.author?.name || previewData?.author?.username || source?.sourceName;
   const captureReady = isScreenshotReady(screenshot);
   const hasError = ['invalid-url', 'unsupported-domain', 'missing-post-id', 'capture-failed'].includes(status);
   const canRecapture = source?.sourceType === 'x' && !source?.feedItemId;
-  const launchSteps = ['Screenshot asset', 'Source eligibility', 'Wallet approval', 'Pump.fun launch', 'Solana confirmation', 'Coin page live'];
+  const launchSteps = ['Preserve image', 'Prepare metadata', 'Open pump.fun', 'Launch on pump.fun'];
   return (
     <div className="floating-window mint-window">
       <PixelWindow eyebrow="MINT STATION · PUMP.FUN" title="Preserved source launch control" onClose={onClose}>
@@ -956,15 +791,12 @@ function MintWindow({ status, statusMessage, launchStatus, source, sourceRecord,
               <label className="field-label" htmlFor="token-name">TOKEN NAME<input className="field-input" id="token-name" value={tokenName} maxLength="32" placeholder="Chair Coin" onChange={(event) => setTokenName(event.target.value)} /></label>
             </div>
             <label className="panel-note"><input type="checkbox" checked={rightsConfirmed} onChange={(event) => setRightsConfirmed(event.target.checked)} />I have permission to use this image and metadata, and I choose to prepare a token linked to this source.</label>
-            <div className="launch-facts"><span>PLATFORM · <strong>pump.fun</strong></span><span>NETWORK · <strong>{networkLabel(network)}</strong></span><span>WALLET · <strong>{wallet ? `${wallet.provider} ${wallet.address.slice(0, 5)}…${wallet.address.slice(-4)}` : 'NOT CONNECTED'}</strong></span><span>COST · <strong>Shown by pump.fun before approval</strong></span></div>
+            <div className="launch-facts"><span>PLATFORM · <strong>pump.fun</strong></span><span>NETWORK · <strong>Solana mainnet</strong></span><span>WALLET · <strong>Connect on pump.fun</strong></span><span>COST · <strong>Shown by pump.fun before approval</strong></span></div>
             {launchStatus !== 'idle' && <div className="launch-status"><span>LAUNCH STATUS</span><strong>{launchStatus.toUpperCase()}</strong></div>}
             {!launchDraft ? <button className="pixel-button primary" type="button" onClick={onContinue}><Coins /> Continue to Launch</button> : <>
-              <div className="launch-draft"><strong>PROPOSAL READY · ${launchDraft.ticker}</strong><span>Download the image and enter your proposal on pump.fun. Approve creation in your wallet, then provide its creation transaction to verify.</span></div>
-              <div className="window-actions"><button className="pixel-button primary" type="button" onClick={onOpenPumpFun}><ExternalLink /> Open pump.fun Launch</button><a className="pixel-button" href={screenshot.screenshotUrl} download={`tweetmint-${source.postId}.${screenshot.screenshotFormat || 'png'}`}><Download /> Download image</a></div>
-              <label className="field-label" htmlFor="mint-address">MINT RETURNED BY PUMP.FUN<input className="field-input" id="mint-address" value={mintAddress} placeholder="Paste the Solana mint address" onChange={(event) => setMintAddress(event.target.value)} /></label>
-              <label className="field-label" htmlFor="launch-signature">CREATION TRANSACTION SIGNATURE<input className="field-input" id="launch-signature" value={launchSignature} placeholder="Paste the wallet-signed creation transaction signature" onChange={(event) => setLaunchSignature(event.target.value)} /></label>
-              <p className="muted">Verification asks your wallet to sign a message proving ownership of this proposal. It does not send a transaction.</p>
-              <button className="pixel-button warning" type="button" onClick={onVerifyLaunch}><ShieldCheck /> Sign & Verify Launch</button>
+              <div className="launch-draft"><strong>PROPOSAL READY · ${launchDraft.ticker}</strong><span>Download the image and enter your proposal on pump.fun. Connect your wallet and complete creation there.</span></div>
+              <div className="window-actions"><a className="pixel-button primary" href={buildPumpFunLaunchUrl()} target="_blank" rel="noopener noreferrer"><ExternalLink /> Open pump.fun Launch</a><a className="pixel-button" href={screenshot.screenshotUrl} download={`tweetmint-${source.postId}.${screenshot.screenshotFormat || 'png'}`}><Download /> Download image</a></div>
+
             </>}
           </section>}
           <div className="steps">{launchSteps.map((label, index) => <div className="step" key={label}>{index + 1} · {label}</div>)}</div>
@@ -997,28 +829,11 @@ function HowItWorksWindow({ onLaunch, onClose }) {
     ['STEP 2 — PRESERVE AN IMAGE', 'Upload an authorized image and confirm your rights. Articles and Bluesky posts retain their own source IDs; X posts retain their status IDs.'],
     ['STEP 3 — CHOOSE A TICKER', 'User defines the token ticker.'],
     ['STEP 4 — LAUNCH ON PUMP.FUN', 'Download your preserved image, enter the prepared metadata on pump.fun, and approve creation in your connected wallet.'],
-    ['STEP 5 — VERIFY THE COIN', 'Submit the mint and creation transaction signature. TweetMint verifies the pump.fun deployment and wallet signer before announcing a coin.']
+    ['STEP 5 — VIEW YOUR COIN', 'View your launch on pump.fun or Solana Explorer. TweetMint does not verify or track launches.']
   ];
   return <div className="floating-window how-window"><PixelWindow eyebrow="HOW IT WORKS" title="From post to preserved coin" onClose={onClose}><div className="how-content"><div className="how-hero"><PostScreenshot asset={sample} alt="Illustrative source-to-coin diagram; no real post or token" /><div><p>TweetMint preserves the original post as an image, then connects it to a wallet-approved Solana coin launch.</p><p>Every coin keeps its original source identity.</p><p>One screenshot. One source post. One coin.</p></div></div><div className="how-steps">{steps.map(([title, text], index) => <article className="how-step" key={title}><span>{String(index + 1).padStart(2, '0')}</span><div><strong>{title}</strong><p>{text}</p></div></article>)}</div><button className="pixel-button primary" type="button" onClick={onLaunch}><Coins /> Open Launch Station</button></div></PixelWindow></div>;
 }
 
-function WalletWindow({ wallet, walletState, onConnect, onDisconnect, onRefresh, onCopy, onClose }) {
-  useEffect(() => {
-    const onKeyDown = (event) => { if (event.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onClose]);
-
-  if (wallet) {
-    const balance = walletState.balanceStatus === 'loading'
-      ? 'FETCHING…'
-      : walletState.balanceStatus === 'ready' && Number.isFinite(walletState.solBalance)
-        ? `${walletState.solBalance.toFixed(4)} SOL`
-        : 'UNAVAILABLE';
-    return <div className="wallet-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="floating-window wallet-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><PixelWindow eyebrow="WALLET ACCOUNT" title={wallet.provider} onClose={onClose}><div className="window-body"><p className="panel-note"><Wallet />Connected through the official browser extension. TweetMint never requests private keys, seed phrases, or automatic signatures.</p><div className="wallet-account-status"><span className="wallet-connected-dot" aria-hidden="true" /> CONNECTION · CONNECTED</div><p className="muted">NETWORK · {networkLabel(walletState.network)}</p><p className="muted">PUBLIC ADDRESS</p><a className="wallet-address-full wallet-link" href={getExplorerUrl(wallet.address, walletState.network)} target="_blank" rel="noreferrer">{wallet.address}</a><a className="token-explorer-link" href={getExplorerUrl(wallet.address, walletState.network)} target="_blank" rel="noreferrer">View on Solana Explorer</a><div className="wallet-balance"><span>SOL BALANCE</span><strong>{balance}</strong></div>{walletState.balanceError && <p className="wallet-error">{walletState.balanceError}</p>}<div className="wallet-tokens"><p className="muted">SPL TOKENS</p>{walletState.splTokenStatus === 'loading' ? <span className="wallet-empty">Reading verified holdings…</span> : walletState.splTokenStatus === 'error' ? <span className="wallet-empty">{walletState.splTokenError}</span> : walletState.splTokens.length ? walletState.splTokens.slice(0, 8).map((token) => <div className="wallet-token-row" key={`${token.mint}-${token.amount}`}><span>{token.mint.slice(0, 6)}…{token.mint.slice(-4)}</span><strong>{token.uiAmount}</strong></div>) : <span className="wallet-empty">No verified token holdings returned.</span>}</div><div className="window-actions"><button className="pixel-button" type="button" onClick={() => onCopy(wallet.address)}><Copy /> Copy address</button><button className="pixel-button" type="button" onClick={onRefresh} disabled={walletState.balanceStatus === 'loading'}><RefreshCw /> Refresh balance</button><button className="pixel-button warning" type="button" onClick={onDisconnect} disabled={walletState.disconnecting}>{walletState.disconnecting ? 'Disconnecting…' : 'Disconnect'}</button></div></div></PixelWindow></div></div>;
-  }
-
-  const options = walletState.walletOptions.length ? walletState.walletOptions : WALLET_PROVIDERS.map((provider) => ({ ...provider, installed: false }));
-  const mobileBrowser = typeof navigator !== 'undefined' && /android|iphone|ipad|mobile/i.test(navigator.userAgent);
-  return <div className="wallet-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="floating-window wallet-modal" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><PixelWindow eyebrow="WALLET STATION" title="CONNECT YOUR WALLET" onClose={onClose}><div className="wallet-modal-body"><p className="wallet-modal-subtitle">Connect to the Solana world.</p>{mobileBrowser && <p className="wallet-footnote wallet-mobile-note">Browser extensions connect on supported desktop browsers. Install or open TweetMint on desktop to continue.</p>}<div className="wallet-grid">{options.map((option) => { const connecting = walletState.status === 'connecting' && walletState.selectedProvider === option.id; const icon = typeof option.icon === 'string' ? option.icon : null; return <div className="wallet-option" key={option.id}><button className="wallet-choice" type="button" onClick={() => onConnect(option.id)} disabled={!option.installed || walletState.status === 'connecting'} aria-label={`Connect ${option.name}`}><span className="wallet-icon">{icon ? <img src={icon} alt="" /> : option.name[0]}</span><span>{option.name.toUpperCase()}</span><small className={option.installed ? 'wallet-installed' : ''}>{connecting ? 'CONNECTING…' : option.installed ? 'AVAILABLE' : 'NOT INSTALLED'}</small></button>{!option.installed && <a className="wallet-install-link" href={option.installUrl} target="_blank" rel="noreferrer">Install {option.name}</a>}</div>; })}</div>{walletState.status === 'error' && walletState.connectionError && <p className="wallet-error" role="alert">{walletState.connectionError}</p>}<p className="wallet-footnote">Only Phantom and Solflare are offered. Authorization happens in the selected official extension; no transaction is signed during connection. <a className="wallet-link" href="https://solana.com" target="_blank" rel="noreferrer">Solana</a> · <a className="wallet-link" href="https://phantom.com/download" target="_blank" rel="noreferrer">Phantom</a> · <a className="wallet-link" href="https://solflare.com/" target="_blank" rel="noreferrer">Solflare</a></p></div></PixelWindow></div></div>;
+function WalletWindow({ onClose }) {
+  return <div className="floating-window wallet-modal"><PixelWindow eyebrow="WALLET STATION" title="WALLET LINKS" onClose={onClose}><div className="window-body"><p>Open your wallet provider or explorer. Wallet connections and approvals happen on the destination website.</p><div className="window-actions">{[['Phantom', 'https://phantom.com/'], ['Solflare', 'https://solflare.com/'], ['Solana Explorer', 'https://explorer.solana.com/']].map(([name, url]) => <a key={name} className="pixel-button" href={url} target="_blank" rel="noopener noreferrer">{name}<ExternalLink /></a>)}</div></div></PixelWindow></div>;
 }

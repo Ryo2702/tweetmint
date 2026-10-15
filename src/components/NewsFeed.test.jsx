@@ -1,57 +1,52 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import NewsFeed, { NewsCard } from './NewsFeed.jsx';
+import NewsFeed, { SOURCE_LINKS } from './NewsFeed.jsx';
+import App from '../App.jsx';
+import { CRYPTO_NEWS, CRYPTO_NEWS_UPDATED } from '../data/cryptoNews.js';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 
-const story = {
-  id: 'a', sourceType: 'bluesky', platform: 'Bluesky', sourceName: 'Actual source author',
-  author: { name: 'Source Author', handle: 'source.bsky.social' }, headline: 'Source-provided text',
-  originalUrl: 'https://bsky.app/profile/source.bsky.social/post/example', category: 'crypto',
-  publishedAt: '2026-10-11T12:00:00Z', discoveredAt: '2026-10-12T14:00:00Z',
-  engagement: { reactions: { fire: 2 }, comments: 1, shares: 3 }
-};
-
-function render(item, comments = [], expanded = false) {
-  const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
-  client.setQueryData(['news', 'item', item.id], { item, comments });
-  return renderToStaticMarkup(<QueryClientProvider client={client}><NewsCard item={item} initiallyExpanded={expanded} onMakeCoin={() => {}} /></QueryClientProvider>);
-}
-
-describe('real source cards', () => {
-  it('offers the requested close control on the embedded discovery feed', () => {
-    const client = new QueryClient();
-    const html = renderToStaticMarkup(<QueryClientProvider client={client}><NewsFeed embedded onClose={() => {}} /></QueryClientProvider>);
-    expect(html).toContain('aria-label="Close NEWS &amp; VIRAL FEED"');
+describe('hyperlink-only integrations', () => {
+  it('renders source links and the close control without a query provider', () => {
+    const html = renderToStaticMarkup(<NewsFeed embedded onClose={() => {}} />);
+    expect(html).toContain('aria-label="Close CRYPTO NEWS &amp; LINKS"');
+    for (const [, url] of SOURCE_LINKS) expect(html).toContain(`href="${url}"`);
+    expect(html).toContain('rel="noopener noreferrer"');
   });
 
-  it('keeps platform, authorship, source URL and publication/discovery times distinct', () => {
-    const html = render(story);
-    expect(html).toContain('BLUESKY POST');
-    expect(html).not.toContain('X POST');
-    expect(html).toContain('Source Author');
-    expect(html).toContain(`href="${story.originalUrl}"`);
-    expect(html).toContain(`dateTime="${story.publishedAt}"`);
-    expect(html).toContain(`dateTime="${story.discoveredAt}"`);
-    expect(html).toContain('TWEETMINT REACTIONS');
-    expect(html).toContain('MAKE IT A COIN');
+  it('shows dated crypto stories as source links and labels the manual snapshot', () => {
+    const html = renderToStaticMarkup(<NewsFeed />);
+    expect(CRYPTO_NEWS.length).toBeGreaterThan(0);
+    expect(html).toContain('Manually updated');
+    expect(html).toContain(`dateTime="${CRYPTO_NEWS_UPDATED}"`);
+    for (const story of CRYPTO_NEWS) {
+      expect(new URL(story.url).protocol).toBe('https:');
+      expect(html).toContain(`href="${story.url}"`);
+      expect(html).toContain(`dateTime="${story.publishedAt}"`);
+      expect(Date.parse(story.publishedAt)).toBeLessThanOrEqual(Date.parse(CRYPTO_NEWS_UPDATED));
+    }
   });
 
-  it('identifies fictional comments and escapes source-supplied text', () => {
-    const html = render({ ...story, summary: '<script>alert(1)</script>' }, [{
-      id: 'c', actorName: 'Pixel Matt', actorType: 'fictional', content: 'Reading the source.', createdAt: story.discoveredAt
-    }], true);
-    expect(html).toContain('FICTIONAL CHARACTER');
-    expect(html).toContain('not source reporting');
-    expect(html).toContain('&lt;script&gt;');
-    expect(html).not.toContain('<script>');
+  it('renders the app without contacting services', () => {
+    const fetch = vi.fn(() => { throw new Error('Unexpected request'); });
+    vi.stubGlobal('fetch', fetch);
+    try {
+      const html = renderToStaticMarkup(<App />);
+      expect(html).toContain('Wallet links');
+      expect(fetch).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
   });
 
-  it('requires a user action to load an official X embed while retaining the source link', () => {
-    const item = { ...story, sourceType: 'x', platform: 'X', originalUrl: 'https://x.com/real_author/status/1234567890' };
-    const html = render(item, [], true);
-    expect(html).toContain('X POST');
-    expect(html).toContain('Load official X embed');
-    expect(html).toContain('Open Original Source');
-    expect(html).not.toContain('platform.twitter.com/widgets.js');
+  it('contains no application API clients or external embed loaders', () => {
+    function check(directory) {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) check(path);
+        else if (/\.[jt]sx?$/.test(path) && !path.includes('.test.')) {
+          expect(readFileSync(path, 'utf8'), path).not.toMatch(/\bfetch\s*\(|\bnew\s+(?:WebSocket|XMLHttpRequest|EventSource)\b|\/api\/|platform\.twitter\.com|solana:signMessage/);
+        }
+      }
+    }
+    check('src');
   });
 });

@@ -773,3 +773,6 @@ button.stat-item:hover { border-color: #b8ff3b; background: #23331c; }
 @media (prefers-reduced-motion: reduce) {
   .news-feed-panel *, .news-announcement-stack *, .news-stats-board * { animation: none !important; transition: none !important; }
 }
+
+.news-headline a { color: inherit; text-decoration: none; }
+.news-headline a:hover, .news-headline a:focus-visible { color: #b8ff3b; text-decoration: underline; }
